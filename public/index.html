@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Itinerary Agent</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 4rem auto; padding: 0 1rem; color: #222; }
+    code { background: #f2f2f2; padding: 0.15rem 0.4rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Itinerary Agent</h1>
+  <p>
+    This site hosts a Netlify scheduled function (<code>process-itineraries</code>)
+    that reads pending trip rows from a Google Sheet, generates an itinerary via
+    a remote Ollama server, renders it as a PDF, and emails it to the traveler.
+  </p>
+  <p>See the repo README for setup and configuration.</p>
+</body>
+</html>

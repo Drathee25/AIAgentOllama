@@ -1,0 +1,17 @@
+{
+  "name": "itinerary-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ollama-powered agent that reads trip requests from a Google Sheet, generates day-by-day itineraries, renders them as PDFs, and emails them out.",
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "pdfkit": "^0.15.0",
+    "resend": "^4.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

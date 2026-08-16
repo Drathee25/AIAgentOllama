@@ -1,0 +1,11 @@
+[build]
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Runs every hour and processes any unprocessed rows in the Google Sheet.
+# Cron syntax also works, e.g. "0 */2 * * *" for every 2 hours.
+[functions."process-itineraries"]
+  schedule = "@hourly"
