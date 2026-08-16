@@ -3,9 +3,11 @@ const { generateItinerary } = require("./lib/ollama");
 const { buildItineraryPdf } = require("./lib/pdf");
 const { sendItineraryEmail } = require("./lib/email");
 
-// Cap rows processed per invocation to stay within the function's execution
-// time limit (Ollama generation + PDF + email can take a while per row).
-const MAX_ROWS_PER_RUN = Number(process.env.MAX_ROWS_PER_RUN || 5);
+// Cap rows processed per invocation to stay within the background function's
+// 15-minute execution limit. Local testing showed ~3-4 min per itinerary
+// (Ollama generation dominates), so keep this conservative and let the
+// hourly schedule work through a backlog over multiple runs if needed.
+const MAX_ROWS_PER_RUN = Number(process.env.MAX_ROWS_PER_RUN || 3);
 
 exports.handler = async () => {
   const results = [];

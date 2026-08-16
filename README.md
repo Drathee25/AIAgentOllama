@@ -2,7 +2,13 @@
 
 Reads trip requests from a Google Sheet, generates a day-by-day itinerary
 using an Ollama LLM, renders it as a PDF, and emails it to the traveler.
-Runs as a scheduled Netlify Function.
+Runs as a scheduled Netlify **background** function.
+
+**Tested locally** against `llama3:8b`: a single 4-day itinerary took
+~3.5 minutes end-to-end (Ollama generation dominates). Budget for several
+minutes per trip — this is why the function uses Netlify's background-function
+timeout (15 min) instead of the standard 10s/26s limit, and why
+`MAX_ROWS_PER_RUN` defaults to a conservative 3.
 
 ## Important: Ollama hosting
 
@@ -18,12 +24,16 @@ Not implemented in this version (skipped per initial setup). Email delivery
 is fully wired up via Resend. To add WhatsApp later, the cleanest path is
 Twilio's WhatsApp API — add a `sendItineraryWhatsApp` function alongside
 `netlify/functions/lib/email.js` and call it next to the email send in
-`netlify/functions/process-itineraries.js`.
+`netlify/functions/process-itineraries-background.js`.
 
 ## How it works
 
-1. `process-itineraries` runs on a schedule (hourly by default, see
-   `netlify.toml`).
+1. `process-itineraries-background` runs on a schedule (hourly by default,
+   see `netlify.toml`). The `-background` suffix is required by Netlify to
+   get the longer (15 min) execution limit — **background functions require
+   a paid Netlify plan**; on the free tier, either downgrade to synchronous
+   (drop the suffix, accept the 10s/26s limit) or use a fast/GPU-backed
+   Ollama server and set `MAX_ROWS_PER_RUN=1`.
 2. It reads all rows from the sheet where the **Status** column is blank.
 3. For each row (up to `MAX_ROWS_PER_RUN` per invocation), it:
    - Builds a prompt from the row and asks Ollama for a structured JSON
@@ -94,7 +104,7 @@ netlify dev
 Trigger the function locally:
 
 ```bash
-netlify functions:invoke process-itineraries
+netlify functions:invoke process-itineraries-background
 ```
 
 ### 5. Deploy to Netlify

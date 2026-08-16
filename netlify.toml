@@ -7,5 +7,10 @@
 
 # Runs every hour and processes any unprocessed rows in the Google Sheet.
 # Cron syntax also works, e.g. "0 */2 * * *" for every 2 hours.
-[functions."process-itineraries"]
+#
+# Named "*-background" so it gets Netlify's background-function timeout
+# (up to 15 min) instead of the standard 10s/26s limit — local testing
+# showed a single itinerary can take 2-4+ min depending on the Ollama
+# model and hardware. Background functions require a paid Netlify plan.
+[functions."process-itineraries-background"]
   schedule = "@hourly"
