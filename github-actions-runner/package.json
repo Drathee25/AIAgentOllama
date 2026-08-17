@@ -1,0 +1,9 @@
+{
+  "name": "itinerary-agent-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runs inside GitHub Actions to generate itineraries via a local Ollama instance.",
+  "dependencies": {
+    "undici": "^6.19.0"
+  }
+}

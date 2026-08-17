@@ -8,7 +8,9 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Generous: each Ollama call now gets up to 15 min of its own headroom
+    # (see generate.js), and up to MAX_ROWS_PER_FETCH rows run sequentially.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +39,10 @@ jobs:
 
       - name: Pull model (no-op if already cached)
         run: ollama pull llama3
+
+      - name: Install runner dependencies
+        working-directory: github-actions-runner
+        run: npm install
 
       - name: Generate pending itineraries
         working-directory: github-actions-runner

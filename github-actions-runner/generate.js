@@ -4,6 +4,18 @@
 // for each via local Ollama, and POSTs the result back so the Web App can
 // build the PDF and send the email — no Google auth needed here at all.
 
+const { setGlobalDispatcher, Agent } = require("undici");
+
+// Node's built-in fetch (undici under the hood) silently kills any request
+// that takes longer than 5 minutes (its default headersTimeout/bodyTimeout),
+// throwing a generic "fetch failed" with no indication that's what happened.
+// The richer, multi-pointer itinerary prompt can legitimately take Ollama
+// several minutes on a CPU-only runner, especially for content-heavy
+// destinations - raise the ceiling well above that (comfortably under the
+// job's own 30+ minute timeout) so a slow-but-working generation isn't cut
+// off mid-response.
+setGlobalDispatcher(new Agent({ headersTimeout: 15 * 60 * 1000, bodyTimeout: 15 * 60 * 1000 }));
+
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
@@ -12,6 +24,19 @@ const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 if (!WEBHOOK_URL || !WEBHOOK_SECRET) {
   console.error("WEBHOOK_URL and WEBHOOK_SECRET env vars must be set");
   process.exit(1);
+}
+
+// Retries a flaky async operation once after a short pause - covers
+// transient network blips (on either the Ollama call or the webhook call)
+// without masking a genuinely broken request.
+async function withRetry(fn, label) {
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(`${label} failed once (${err.message}), retrying...`);
+    await new Promise((r) => setTimeout(r, 5000));
+    return fn();
+  }
 }
 
 function buildPrompt(trip) {
@@ -110,15 +135,21 @@ async function generateItinerary(trip) {
 
   for (const trip of trips) {
     console.log(`Row ${trip.rowNumber}: generating itinerary for "${trip.destination}"...`);
+    const startedAt = Date.now();
     try {
-      const itinerary = await generateItinerary(trip);
-      const result = await callWebhook("submitResult", { rowNumber: trip.rowNumber, itinerary });
+      const itinerary = await withRetry(() => generateItinerary(trip), `Ollama generation for row ${trip.rowNumber}`);
+      console.log(`Row ${trip.rowNumber}: generated in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+      const result = await withRetry(
+        () => callWebhook("submitResult", { rowNumber: trip.rowNumber, itinerary }),
+        `submitResult for row ${trip.rowNumber}`
+      );
       console.log(`Row ${trip.rowNumber}: ${JSON.stringify(result)}`);
     } catch (err) {
       console.error(`Row ${trip.rowNumber} failed:`, err.message);
-      await callWebhook("submitResult", { rowNumber: trip.rowNumber, error: err.message }).catch((e) =>
-        console.error("Also failed to report the error back to the webhook:", e)
-      );
+      await withRetry(
+        () => callWebhook("submitResult", { rowNumber: trip.rowNumber, error: err.message }),
+        `error report for row ${trip.rowNumber}`
+      ).catch((e) => console.error("Also failed to report the error back to the webhook after retry:", e));
     }
   }
 

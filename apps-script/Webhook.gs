@@ -28,7 +28,10 @@ const START_COL = 1; // A
 const NUM_COLS = 16; // A..P
 const STATUS_COL = 15; // O
 const SENT_AT_COL = 16; // P
-const MAX_ROWS_PER_FETCH = 3;
+// Kept low: each Ollama generation can now legitimately take several
+// minutes for the richer, multi-pointer itinerary content, and rows run
+// sequentially within one GitHub Actions job (45 min ceiling).
+const MAX_ROWS_PER_FETCH = 2;
 
 function doPost(e) {
   let body;
