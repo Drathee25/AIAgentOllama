@@ -1,0 +1,47 @@
+name: Generate Itineraries
+
+on:
+  schedule:
+    - cron: "0 * * * *" # hourly
+  workflow_dispatch: {} # allow manual "Run workflow" from the Actions tab
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-models-llama3
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama server
+        run: |
+          ollama serve &
+          for i in $(seq 1 30); do
+            curl -s http://localhost:11434/api/version && exit 0
+            sleep 2
+          done
+          echo "Ollama did not become ready in time" >&2
+          exit 1
+
+      - name: Pull model (no-op if already cached)
+        run: ollama pull llama3
+
+      - name: Generate pending itineraries
+        working-directory: github-actions-runner
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          OLLAMA_MODEL: llama3
+        run: node generate.js

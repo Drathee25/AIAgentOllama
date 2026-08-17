@@ -1,73 +1,102 @@
 # Itinerary Agent
 
 Reads trip requests from a Google Sheet, generates a day-by-day itinerary
-using an Ollama LLM, renders it as a PDF, and emails it to the traveler.
+using an Ollama LLM, renders it as a PDF, and emails it to the traveler —
+built for zero ongoing cost.
 
-**Active implementation: Google Apps Script** (`apps-script/Code.gs`), bound
-directly to the "Trip Inquiries" sheet — see below. The original Netlify
-function (`netlify/functions/`) is kept in the repo but is **not** the
-deployed path; it's documented further down for reference.
+**Active implementation: GitHub Actions + Apps Script**, split across three
+pieces:
+1. [`.github/workflows/generate-itineraries.yml`](.github/workflows/generate-itineraries.yml) +
+   [`github-actions-runner/generate.js`](github-actions-runner/generate.js) —
+   runs hourly on GitHub's free Actions runners (unlimited/free since this
+   repo is public), installs Ollama fresh each run, and generates itineraries.
+2. [`apps-script/Webhook.gs`](apps-script/Webhook.gs) — a standalone Apps
+   Script Web App (deliberately **not** bound to the sheet, so it can never
+   collide with the sheet's existing form-intake webhook) that GitHub
+   Actions calls to fetch pending trips and submit results. This is where
+   the PDF gets built and the email gets sent, since it has native Google
+   auth and GitHub Actions doesn't.
+3. [`apps-script/Code.gs`](apps-script/Code.gs) — the sheet-bound script
+   with a `processPendingTrips`/`createHourlyTrigger` fallback path that
+   calls Ollama directly instead of going through GitHub Actions. Useful if
+   you ever have a real always-on `OLLAMA_URL` (a VPS, etc.) and want to
+   skip the GitHub Actions hop — see "Alternative: direct Apps Script →
+   Ollama" further down. **Not currently scheduled** (superseded by the
+   GitHub Actions path).
 
-## Why Apps Script instead of Netlify
+The original Netlify function (`netlify/functions/`) is kept in the repo
+but is **not** deployed/active; documented further down for reference.
 
-The Netlify function needed a Google service account (with a downloadable
-JSON key) to read/write the sheet. The Google Cloud organization we tried
-to create that under enforces the `iam.disableServiceAccountKeyCreation`
-org policy, which blocks all service account key creation org-wide — not
-something fixable without an Org Policy Administrator on that Workspace
-domain. Apps Script sidesteps this entirely: a script bound to the sheet
-runs as the sheet's owner automatically, no service account or key needed.
-It also has built-in `MailApp` for email (no Resend account needed) and a
-6-30 minute execution window per run (vs. Netlify's 15 min background-function
-limit, which itself required a paid plan).
+## Why this path (and not the simpler ones we tried first)
 
-**Tested locally** (via the equivalent Netlify code path against
-`llama3:8b`): a single 4-day itinerary took ~3.5 minutes end-to-end (Ollama
-generation dominates). Budget for several minutes per trip in Apps Script
-too — same Ollama server, same generation cost.
+- **Netlify** needed a Google service account (downloadable JSON key) for
+  Sheets access. The Google Cloud org it was created under enforces
+  `iam.disableServiceAccountKeyCreation` — blocks all key creation
+  org-wide, not fixable without an Org Policy Administrator there.
+- **Plain Google Apps Script calling Ollama directly** works great, but
+  needs an always-on, publicly-reachable Ollama host. No budget was
+  available for a VPS, and even normally-free options didn't pan out:
+  Oracle Cloud's free-forever tier requires a card for verification (not
+  approved), and Hugging Face's Docker Spaces (which can run a real
+  persistent process, unlike serverless platforms) turned out to require a
+  paid plan even on personal accounts — Static-only Spaces are free, but
+  those can't run Ollama.
+- **GitHub Actions** is genuinely free with no card, since Actions minutes
+  are unlimited for public repos, and its runners are real (if ephemeral)
+  VMs that can run a real process like `ollama serve`. The trade-off:
+  Actions runners aren't reachable *from* the internet (no inbound
+  networking), so Apps Script can't call out to one directly the way it
+  would call a normal `OLLAMA_URL`. Instead, GitHub Actions runs on its own
+  cron and calls *out* to the `Webhook.gs` Web App — direction reversed
+  from every other setup in this repo, but it's what makes free compute
+  workable here.
 
-## Important: Ollama hosting
+**Tested locally** (via the equivalent Netlify/Apps Script code path
+against `llama3:8b`): a single 4-day itinerary took ~1-4 minutes end-to-end
+(Ollama generation dominates). Budget similarly in GitHub Actions — each
+run installs Ollama and pulls the model fresh (cached between runs via
+`actions/cache` to avoid re-downloading every time), then generates up to
+3 itineraries.
 
-Neither Netlify Functions nor Google Apps Script can run Ollama itself —
-both are short-lived/serverless execution models, and Ollama needs a
-persistent, always-running process with multi-GB model weights loaded in
-memory. You need Ollama running somewhere that stays up continuously and
-is reachable over HTTPS, and this project just calls it via `OLLAMA_URL`.
+## Ollama hosting
 
-**Free option (no budget, no VPS, no card):** [`huggingface-space/`](huggingface-space/)
-is a ready-to-push Docker Space for Hugging Face's free CPU tier — see
-"1. Ollama server" below. Any other always-on host works too (VPS, home
-server behind a reverse proxy, managed Ollama host); Ollama has no
-built-in auth, so whatever you use should sit behind HTTPS with some form
-of access control.
-
-## WhatsApp sending
-
-Not implemented in this version (skipped per initial setup). Email delivery
-is fully wired up via Resend. To add WhatsApp later, the cleanest path is
-Twilio's WhatsApp API — add a `sendItineraryWhatsApp` function alongside
-`netlify/functions/lib/email.js` and call it next to the email send in
-`netlify/functions/process-itineraries-background.js`.
+Neither Netlify Functions nor a bound Google Apps Script trigger can run
+Ollama itself — both are short-lived/serverless execution models, and
+Ollama needs a persistent process with multi-GB model weights loaded in
+memory. GitHub Actions runners solve this differently: they're temporary
+but real VMs, so `ollama serve` runs fine for the duration of each job —
+see "Why this path" above for why the architecture is shaped the way it is.
 
 ## How it works
 
-1. `process-itineraries-background` runs on a schedule (hourly by default,
-   see `netlify.toml`). The `-background` suffix is required by Netlify to
-   get the longer (15 min) execution limit — **background functions require
-   a paid Netlify plan**; on the free tier, either downgrade to synchronous
-   (drop the suffix, accept the 10s/26s limit) or use a fast/GPU-backed
-   Ollama server and set `MAX_ROWS_PER_RUN=1`.
-2. It reads all rows from the sheet where the **Status** column is blank.
-3. For each row (up to `MAX_ROWS_PER_RUN` per invocation), it:
-   - Builds a prompt from the row and asks Ollama for a structured JSON
-     itinerary.
-   - Renders that JSON into a PDF with `pdfkit`.
-   - Emails the PDF to the traveler via Resend.
-   - Writes `Sent` (or `Error: ...`) back into the Status column, with a
-     timestamp, so the row is never processed twice.
+1. `.github/workflows/generate-itineraries.yml` runs hourly (also
+   manually triggerable from the repo's Actions tab). It installs Ollama
+   fresh, restores the cached model (or pulls it if not cached), and
+   starts `ollama serve` locally on the runner.
+2. `github-actions-runner/generate.js` POSTs `{action: "getPending"}` to
+   the `Webhook.gs` Web App, which reads the sheet, returns up to 3 rows
+   where **Status** is blank, and immediately marks them `Processing` (so
+   an overlapping run can't double-claim them).
+3. For each trip, it builds a prompt and asks the local Ollama for a
+   structured JSON itinerary, then POSTs `{action: "submitResult", ...}`
+   back to the Web App.
+4. `Webhook.gs` renders the itinerary into a PDF (Google Docs → PDF
+   export), emails it via `MailApp`, and writes `Sent` (or `Error: ...`)
+   plus a timestamp into the Status/Sent At columns.
 
-Because processing is gated on the Status column, re-running the function
-(manually or via schedule) is safe — it only ever touches pending rows.
+Because claiming happens immediately on fetch and results are gated on
+`rowNumber`, re-running (manually or via schedule) is safe. One known gap:
+if a GitHub Actions run crashes *after* claiming a row but *before*
+submitting a result, that row is stuck at `Processing` with no automatic
+retry — manually clear its Status cell to re-queue it.
+
+## WhatsApp sending
+
+Not implemented in this version (skipped per initial setup). Email
+delivery is fully wired up via `MailApp` in `Webhook.gs`. To add WhatsApp
+later, the cleanest path is Twilio's WhatsApp API — call it via
+`UrlFetchApp.fetch(...)` in `submitResult_` in `apps-script/Webhook.gs`,
+next to the `sendItineraryEmail` call.
 
 ## Google Sheet schema
 
@@ -82,87 +111,69 @@ row 2, sheet/tab name `Sheet1`:
 blank for new inquiry rows, it fills them in and never touches columns
 A-N.
 
-## Setup (Apps Script — the active path)
+## Setup (GitHub Actions + Webhook — the active path)
 
-### 1. Ollama server (free: Hugging Face Space)
+### 1. Deploy the Webhook Web App
 
-1. Create a free [Hugging Face](https://huggingface.co) account (no card
-   required).
-2. Create a new **Space**: SDK = **Docker**, and set **Visibility to
-   Private** — this matters, since it's what stands in for auth (Ollama
-   itself has none). A public Space would let anyone who finds the URL
-   use your compute.
-3. Push this repo's [`huggingface-space/`](huggingface-space/) folder
-   contents (`Dockerfile` + `README.md`) as the Space's repo contents:
-   ```bash
-   git clone https://huggingface.co/spaces/<your-username>/<space-name> hf-space
-   cp huggingface-space/* hf-space/
-   cd hf-space
-   git add -A && git commit -m "Ollama space" && git push
-   ```
-4. Wait for the build to finish (Space → **Logs**) — it pulls `llama3`
-   (~4.7GB) during the build, so the first build takes a while. Once
-   built, the Space stays warm-ish; free-tier Spaces do sleep after a
-   period of inactivity and take a short while to wake on the next
-   request, so expect an occasional slow first call.
-5. Generate an access token: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) →
-   **New token** → Read access is enough. This is what authenticates
-   calls to your private Space.
-6. Your Space's URL is `https://<your-username>-<space-name>.hf.space`
-   — that's `OLLAMA_URL`. The token from step 5 is `HF_TOKEN` (see
-   Script Properties below).
+1. Go to [script.google.com](https://script.google.com) → **New project**.
+   This must be a **standalone** project (not opened via Extensions from
+   the sheet) — that's what keeps it separate from the sheet's existing
+   form-intake script.
+2. Delete the default boilerplate, paste in the contents of
+   [`apps-script/Webhook.gs`](apps-script/Webhook.gs).
+3. **Project Settings** (gear icon) → **Script Properties** → add:
+   - `SHEET_ID` = the Trip Inquiries spreadsheet ID (from its URL:
+     `https://docs.google.com/spreadsheets/d/<THIS_PART>/edit`)
+   - `WEBHOOK_SECRET` = a long random string you generate yourself (e.g.
+     `openssl rand -hex 32`) — write it down, you'll need it again for the
+     GitHub secret in step 3 below.
+4. **Deploy → New deployment** → type **Web app** → Execute as **Me**,
+   Who has access **Anyone**. Click **Deploy**, approve the OAuth consent
+   screen when prompted (needs Sheets, Drive, and Gmail access).
+5. Copy the **Web app URL** it gives you — that's `WEBHOOK_URL`.
 
-Free CPU tier, no GPU — expect similar generation times to local testing
-(1-4 min per itinerary). Swap `llama3` for a different model by editing
-`huggingface-space/Dockerfile`'s `ollama pull` line (and the
-`OLLAMA_MODEL` script property to match) if you want something smaller/
-faster or larger/better.
+### 2. Add GitHub Actions secrets
 
-Any other always-on HTTPS-reachable Ollama host (VPS, home server +
-reverse proxy) works too — `HF_TOKEN` is only relevant if you go the
-private-Space route; leave it unset otherwise and add your own auth
-scheme in front of Ollama if the host is exposed publicly.
-
-### 2. Install the script
-
-1. Open the "Trip Inquiries" Google Sheet, signed in as an account with
-   **edit** access (the sheet owner, or anyone it's shared with as Editor).
-2. **Extensions → Apps Script**. Delete the default `Code.gs` boilerplate
-   and paste in the contents of [`apps-script/Code.gs`](apps-script/Code.gs)
-   from this repo.
-3. In the editor's left sidebar, **Project Settings** (gear icon) → **Script
-   Properties** → add:
-   - `OLLAMA_URL` = your Ollama endpoint (e.g. the HF Space URL from step 1)
-   - `OLLAMA_MODEL` = `llama3` (optional, this is the default)
-   - `HF_TOKEN` = your Hugging Face access token (only needed if `OLLAMA_URL`
-     points at a private HF Space, per step 1)
-4. Select `createHourlyTrigger` in the function dropdown at the top and
-   click **Run**. The first run will prompt an OAuth consent screen (Apps
-   Script needs permission to read/write the sheet, create/delete temp
-   Docs, and send email) — approve it. This both authorizes the script and
-   sets up the hourly trigger.
+In this repo: **Settings → Secrets and variables → Actions → New
+repository secret**, add:
+- `WEBHOOK_URL` = the Web app URL from step 1.5
+- `WEBHOOK_SECRET` = the same random string from step 1.3
 
 ### 3. Test it
 
-With `createHourlyTrigger` already run once, select `processPendingTrips`
-in the function dropdown and click **Run** to process any pending rows
-immediately rather than waiting for the next hourly tick. Check
-**Executions** in the left sidebar for logs if something fails.
-
-Because processing is gated on the **Status** column (see schema above),
-re-running is always safe — it only ever touches rows with a blank Status.
-
-## WhatsApp sending
-
-Not implemented (skipped per initial setup). To add it, call Twilio's
-WhatsApp API via `UrlFetchApp.fetch(...)` inside `processPendingTrips` in
-`apps-script/Code.gs`, next to the `sendItineraryEmail` call.
+**Actions** tab → **Generate Itineraries** workflow → **Run workflow** to
+trigger it immediately instead of waiting for the next hourly tick. Watch
+the run's logs; it'll print how many pending trips it found and the result
+for each. Because claiming happens on fetch and the Status column gates
+everything, re-running (manually or via the hourly schedule) is always
+safe.
 
 ## Adjusting the schedule
 
-Edit `createHourlyTrigger()` in `apps-script/Code.gs` (e.g.
-`.everyHours(1)` → `.everyMinutes(30)` or `.everyDays(1)`), then re-run it
-from the Apps Script editor to replace the existing trigger.
+Edit the `cron` value in
+[`.github/workflows/generate-itineraries.yml`](.github/workflows/generate-itineraries.yml)
+(standard 5-field cron syntax, e.g. `*/30 * * * *` for every 30 minutes).
+
+## Alternative: direct Apps Script → Ollama (no GitHub Actions hop)
+
+If you get a real always-on, publicly-reachable Ollama host later (a VPS,
+etc.), you can skip the GitHub Actions/Webhook indirection entirely and
+have the sheet-bound script call Ollama directly — this is what
+`apps-script/Code.gs`'s `processPendingTrips`/`createHourlyTrigger`
+already implement, just not currently scheduled:
+
+1. Open the "Trip Inquiries" Google Sheet (signed in with edit access) →
+   **Extensions → Apps Script**, confirm `apps-script/Code.gs`'s contents
+   are already there as a second file (`ItineraryAgent.gs` in this
+   project, alongside the sheet's original intake `Code.gs` — leave that
+   one untouched).
+2. **Project Settings → Script Properties** → set `OLLAMA_URL` (and
+   `OLLAMA_MODEL`, `HF_TOKEN` if relevant) to your host.
+3. Select `createHourlyTrigger` in the function dropdown, click **Run**,
+   approve the OAuth prompt. This schedules `processPendingTrips` hourly.
+4. If the GitHub Actions workflow is also still enabled, disable it
+   (Actions tab → workflow → **⋯ → Disable workflow**) to avoid both
+   paths claiming the same rows.
 
 ---
 
@@ -170,17 +181,19 @@ from the Apps Script editor to replace the existing trigger.
 
 `netlify/functions/process-itineraries-background.js` and its `lib/`
 helpers implement the identical logic for Netlify Functions instead of
-Apps Script. It's blocked on Google Sheets access (see "Why Apps Script
-instead of Netlify" above) but is otherwise complete and tested locally.
-If the org policy blocking service account keys is ever lifted, or the
-project moves to a personal Google account, this path still works:
+Apps Script. It's blocked on Google Sheets access (see "Why this path"
+above) but is otherwise complete and tested locally. If the org policy
+blocking service account keys is ever lifted, or the project moves to a
+personal Google account, this path still works:
 
 1. **Google Sheets access**: enable the Sheets API in Google Cloud
    Console, create a service account + JSON key, share the sheet with the
    service account's email as Editor, set `GOOGLE_SERVICE_ACCOUNT_JSON`
    (the full key JSON) and `GOOGLE_SHEET_ID`.
-2. **Ollama server**: same as above, set `OLLAMA_URL` (and `HF_TOKEN` if
-   using a private HF Space).
+2. **Ollama server**: set `OLLAMA_URL` to any always-on host you have (a
+   VPS, etc. — see "Why this path" above for what was tried and ruled out
+   on the free-tier front; `huggingface-space/` is kept in the repo but
+   turned out to require a paid HF plan, see its README).
 3. **Resend (email)**: sign up at [resend.com](https://resend.com), verify
    a sending domain, set `RESEND_API_KEY` and `EMAIL_FROM`.
 4. **Local dev**: `npm install`, `cp .env.example .env` (fill in values),
