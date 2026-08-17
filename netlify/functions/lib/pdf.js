@@ -18,7 +18,10 @@ function buildItineraryPdf(trip, itinerary) {
       .fontSize(11)
       .fillColor("#555")
       .text(
-        [trip.name && `Prepared for ${trip.name}`, trip.startDate && trip.endDate && `${trip.startDate} - ${trip.endDate}`]
+        [
+          trip.name && `Prepared for ${trip.name}`,
+          [trip.travelDate, trip.duration].filter(Boolean).join(" · "),
+        ]
           .filter(Boolean)
           .join("  |  "),
         { align: "center" }

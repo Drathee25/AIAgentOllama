@@ -48,14 +48,16 @@ Because processing is gated on the Status column, re-running the function
 
 ## Google Sheet schema
 
-Row 1 = headers, data starts on row 2, sheet/tab name `Sheet1`:
+Matches the live "Trip Inquiries" sheet, row 1 = headers, data starts on
+row 2, sheet/tab name `Sheet1`:
 
-| A    | B     | C           | D          | E        | F         | G      | H           | I      | J       |
-|------|-------|-------------|------------|----------|-----------|--------|-------------|--------|---------|
-| Name | Email | Destination | Start Date | End Date | Travelers | Budget | Preferences | Status | Sent At |
+| A | B | C | D | E | F | G | H | I | J | K | L | M | N | O | P |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Timestamp | Name | Phone | Email | Destination | Travel Date | Duration | Time Preference | Trip Type | Adults | Children | Budget | Departing From | Notes | Status | Sent At |
 
-Leave **Status** and **Sent At** blank for new rows — the function fills
-them in.
+**Status** and **Sent At** (O, P) are owned by the function — leave them
+blank for new inquiry rows, it fills them in and never touches columns
+A-N.
 
 ## Setup
 

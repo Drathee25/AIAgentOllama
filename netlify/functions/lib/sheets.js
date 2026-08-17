@@ -1,11 +1,12 @@
 const { google } = require("googleapis");
 
-// Expected sheet columns (row 1 = header, data starts row 2):
-// A: Name  B: Email  C: Destination  D: Start Date  E: End Date
-// F: Travelers  G: Budget  H: Preferences  I: Status  J: Sent At
-const RANGE = "Sheet1!A2:J";
-const STATUS_COL = "I";
-const SENT_AT_COL = "J";
+// Matches the real "Trip Inquiries" sheet (row 1 = header, data starts row 2):
+// A:Timestamp B:Name C:Phone D:Email E:Destination F:Travel Date G:Duration
+// H:Time Preference I:Trip Type J:Adults K:Children L:Budget M:Departing From
+// N:Notes O:Status P:Sent At
+const RANGE = "Sheet1!A2:P";
+const STATUS_COL = "O";
+const SENT_AT_COL = "P";
 
 function getAuth() {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
@@ -41,15 +42,21 @@ async function getPendingTrips() {
   return rows
     .map((row, i) => ({
       rowNumber: i + 2, // offset for header row + 1-index
-      name: row[0] || "",
-      email: row[1] || "",
-      destination: row[2] || "",
-      startDate: row[3] || "",
-      endDate: row[4] || "",
-      travelers: row[5] || "",
-      budget: row[6] || "",
-      preferences: row[7] || "",
-      status: row[8] || "",
+      timestamp: row[0] || "",
+      name: row[1] || "",
+      phone: row[2] || "",
+      email: row[3] || "",
+      destination: row[4] || "",
+      travelDate: row[5] || "",
+      duration: row[6] || "",
+      timePreference: row[7] || "",
+      tripType: row[8] || "",
+      adults: row[9] || "",
+      children: row[10] || "",
+      budget: row[11] || "",
+      departingFrom: row[12] || "",
+      notes: row[13] || "",
+      status: row[14] || "",
     }))
     .filter((trip) => trip.status.trim() === "" && trip.email && trip.destination);
 }

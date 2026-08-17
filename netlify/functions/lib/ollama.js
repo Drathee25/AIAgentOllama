@@ -6,11 +6,15 @@ function buildPrompt(trip) {
 
 Traveler: ${trip.name || "N/A"}
 Destination: ${trip.destination}
-Start Date: ${trip.startDate || "N/A"}
-End Date: ${trip.endDate || "N/A"}
-Number of Travelers: ${trip.travelers || "N/A"}
+Departing From: ${trip.departingFrom || "N/A"}
+Travel Date: ${trip.travelDate || "N/A"}
+Duration: ${trip.duration || "N/A"}
+Preferred Time to Travel: ${trip.timePreference || "N/A"}
+Trip Type: ${trip.tripType || "N/A"}
+Adults: ${trip.adults || "N/A"}
+Children: ${trip.children || "N/A"}
 Budget: ${trip.budget || "N/A"}
-Interests/Preferences: ${trip.preferences || "N/A"}
+Additional Notes: ${trip.notes || "N/A"}
 
 Respond with ONLY valid JSON, no markdown fences, no commentary, matching exactly this structure:
 {
