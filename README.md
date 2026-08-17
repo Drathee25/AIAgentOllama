@@ -4,25 +4,34 @@ Reads trip requests from a Google Sheet, generates a day-by-day itinerary
 using an Ollama LLM, renders it as a PDF, and emails it to the traveler —
 built for zero ongoing cost.
 
-**Active implementation: GitHub Actions + Apps Script**, split across three
+**Active implementation: GitHub Actions + Apps Script**, split across four
 pieces:
-1. [`.github/workflows/generate-itineraries.yml`](.github/workflows/generate-itineraries.yml) +
+1. [`apps-script/intake-webhook.gs`](apps-script/intake-webhook.gs) — the
+   sheet's **pre-existing** form-intake script (receives POSTs from the
+   1TripWiser website, appends the row). The only change made to it: right
+   after appending, it now pings GitHub's `repository_dispatch` API to
+   fire the workflow **immediately**, instead of waiting for any schedule.
+   Wrapped so a failure here (bad token, GitHub outage) can never break
+   the actual form submission.
+2. [`.github/workflows/generate-itineraries.yml`](.github/workflows/generate-itineraries.yml) +
    [`github-actions-runner/generate.js`](github-actions-runner/generate.js) —
-   runs hourly on GitHub's free Actions runners (unlimited/free since this
-   repo is public), installs Ollama fresh each run, and generates itineraries.
-2. [`apps-script/Webhook.gs`](apps-script/Webhook.gs) — a standalone Apps
+   triggered by that dispatch (or manually, for testing) on GitHub's free
+   Actions runners (unlimited/free since this repo is public). Installs
+   Ollama fresh each run and generates itineraries. **No polling, no
+   schedule** — it only ever runs in response to a real new submission.
+3. [`apps-script/Webhook.gs`](apps-script/Webhook.gs) — a standalone Apps
    Script Web App (deliberately **not** bound to the sheet, so it can never
-   collide with the sheet's existing form-intake webhook) that GitHub
-   Actions calls to fetch pending trips and submit results. This is where
-   the PDF gets built and the email gets sent, since it has native Google
-   auth and GitHub Actions doesn't.
-3. [`apps-script/Code.gs`](apps-script/Code.gs) — the sheet-bound script
-   with a `processPendingTrips`/`createHourlyTrigger` fallback path that
-   calls Ollama directly instead of going through GitHub Actions. Useful if
-   you ever have a real always-on `OLLAMA_URL` (a VPS, etc.) and want to
-   skip the GitHub Actions hop — see "Alternative: direct Apps Script →
-   Ollama" further down. **Not currently scheduled** (superseded by the
-   GitHub Actions path).
+   collide with the intake script above) that GitHub Actions calls to
+   fetch pending trips and submit results. This is where the PDF gets
+   built and the email gets sent, since it has native Google auth and
+   GitHub Actions doesn't.
+4. [`apps-script/Code.gs`](apps-script/Code.gs) — a `processPendingTrips`/
+   `createHourlyTrigger` fallback path that calls Ollama directly instead
+   of going through GitHub Actions. Useful if you ever have a real
+   always-on `OLLAMA_URL` (a VPS, etc.) and want to skip the GitHub
+   Actions hop — see "Alternative: direct Apps Script → Ollama" further
+   down. **Not currently scheduled** (superseded by the instant-trigger
+   path above).
 
 The original Netlify function (`netlify/functions/`) is kept in the repo
 but is **not** deployed/active; documented further down for reference.
@@ -46,10 +55,11 @@ but is **not** deployed/active; documented further down for reference.
   VMs that can run a real process like `ollama serve`. The trade-off:
   Actions runners aren't reachable *from* the internet (no inbound
   networking), so Apps Script can't call out to one directly the way it
-  would call a normal `OLLAMA_URL`. Instead, GitHub Actions runs on its own
-  cron and calls *out* to the `Webhook.gs` Web App — direction reversed
-  from every other setup in this repo, but it's what makes free compute
-  workable here.
+  would call a normal `OLLAMA_URL`. Instead the direction is reversed from
+  every other setup in this repo: the intake webhook calls *out* to
+  GitHub's `repository_dispatch` API the instant a new row lands, which
+  starts the workflow, which then calls *out* to the `Webhook.gs` Web App.
+  No polling anywhere in the chain.
 
 **Tested locally** (via the equivalent Netlify/Apps Script code path
 against `llama3:8b`): a single 4-day itinerary took ~1-4 minutes end-to-end
@@ -69,26 +79,36 @@ see "Why this path" above for why the architecture is shaped the way it is.
 
 ## How it works
 
-1. `.github/workflows/generate-itineraries.yml` runs hourly (also
-   manually triggerable from the repo's Actions tab). It installs Ollama
-   fresh, restores the cached model (or pulls it if not cached), and
-   starts `ollama serve` locally on the runner.
-2. `github-actions-runner/generate.js` POSTs `{action: "getPending"}` to
+1. A visitor submits the trip inquiry form on the 1TripWiser website →
+   POSTs to `intake-webhook.gs`'s `doPost`, which appends the row to the
+   sheet (unchanged, pre-existing behavior).
+2. Right after appending, it calls GitHub's `repository_dispatch` API
+   (`triggerItineraryWorkflow_()`) to fire `generate-itineraries.yml`
+   **immediately** — no polling, no waiting for a scheduled tick.
+3. The workflow installs Ollama fresh, restores the cached model (or
+   pulls it if not cached), and starts `ollama serve` locally on the
+   runner.
+4. `github-actions-runner/generate.js` POSTs `{action: "getPending"}` to
    the `Webhook.gs` Web App, which reads the sheet, returns up to 3 rows
    where **Status** is blank, and immediately marks them `Processing` (so
    an overlapping run can't double-claim them).
-3. For each trip, it builds a prompt and asks the local Ollama for a
+5. For each trip, it builds a prompt and asks the local Ollama for a
    structured JSON itinerary, then POSTs `{action: "submitResult", ...}`
    back to the Web App.
-4. `Webhook.gs` renders the itinerary into a PDF (Google Docs → PDF
+6. `Webhook.gs` renders the itinerary into a PDF (Google Docs → PDF
    export), emails it via `MailApp`, and writes `Sent` (or `Error: ...`)
    plus a timestamp into the Status/Sent At columns.
 
 Because claiming happens immediately on fetch and results are gated on
-`rowNumber`, re-running (manually or via schedule) is safe. One known gap:
-if a GitHub Actions run crashes *after* claiming a row but *before*
-submitting a result, that row is stuck at `Processing` with no automatic
-retry — manually clear its Status cell to re-queue it.
+`rowNumber`, re-running (manually via the Actions tab, or from another
+dispatch) is safe. One known gap: if a GitHub Actions run crashes *after*
+claiming a row but *before* submitting a result, that row is stuck at
+`Processing` with no automatic retry — manually clear its Status cell to
+re-queue it. Similarly, if the dispatch call in step 2 itself fails (bad
+token, GitHub outage), that row just sits pending with nothing watching
+for it until the next successful dispatch happens to sweep it up too —
+there's no time-based safety net by design, per the "only run when there's
+a real new entry" requirement.
 
 ## WhatsApp sending
 
@@ -139,20 +159,38 @@ repository secret**, add:
 - `WEBHOOK_URL` = the Web app URL from step 1.5
 - `WEBHOOK_SECRET` = the same random string from step 1.3
 
-### 3. Test it
+### 3. Wire up the instant trigger
 
-**Actions** tab → **Generate Itineraries** workflow → **Run workflow** to
-trigger it immediately instead of waiting for the next hourly tick. Watch
-the run's logs; it'll print how many pending trips it found and the result
-for each. Because claiming happens on fetch and the Status column gates
-everything, re-running (manually or via the hourly schedule) is always
-safe.
+1. Create a GitHub **fine-grained personal access token**:
+   [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new) →
+   scope it to **only** the `Drathee25/AIAgentOllama` repository →
+   under Repository permissions, grant **Contents: Read and write** (this
+   is what the `repository_dispatch` endpoint requires). If GitHub still
+   rejects the dispatch call with that scope, also try adding **Actions:
+   Read and write**.
+2. Open the **Trip Inquiries** sheet → **Extensions → Apps Script** — this
+   opens the project containing the sheet's original intake `Code.gs`.
+   Update that file to match [`apps-script/intake-webhook.gs`](apps-script/intake-webhook.gs)
+   (only the `triggerItineraryWorkflow_()` call and function are new —
+   everything else is unchanged from what was already there).
+3. In that same project's **Project Settings → Script Properties**, add:
+   - `GITHUB_TOKEN` = the token from step 1
+   - `GITHUB_REPO` = `Drathee25/AIAgentOllama`
+4. Save. No redeploy needed if the Web App deployment is on the "Head"
+   version; if it's pinned to a specific version, deploy a new version
+   (**Deploy → Manage deployments → Edit → Version: New version**).
 
-## Adjusting the schedule
+### 4. Test it
 
-Edit the `cron` value in
-[`.github/workflows/generate-itineraries.yml`](.github/workflows/generate-itineraries.yml)
-(standard 5-field cron syntax, e.g. `*/30 * * * *` for every 30 minutes).
+Submit a real inquiry through the website, or send a test POST directly
+to the intake webhook's URL with a JSON body matching what the form
+sends. Within moments, check the repo's **Actions** tab — a new run
+should appear automatically, with no one having clicked "Run workflow".
+You can also trigger a run manually from there for debugging (**Generate
+Itineraries** → **Run workflow**), which is unaffected by the change.
+
+Because claiming happens on fetch and the Status column gates everything,
+overlapping runs are always safe.
 
 ## Alternative: direct Apps Script → Ollama (no GitHub Actions hop)
 
@@ -171,9 +209,10 @@ already implement, just not currently scheduled:
    `OLLAMA_MODEL`, `HF_TOKEN` if relevant) to your host.
 3. Select `createHourlyTrigger` in the function dropdown, click **Run**,
    approve the OAuth prompt. This schedules `processPendingTrips` hourly.
-4. If the GitHub Actions workflow is also still enabled, disable it
-   (Actions tab → workflow → **⋯ → Disable workflow**) to avoid both
-   paths claiming the same rows.
+4. Remove the `triggerItineraryWorkflow_()` call from
+   `intake-webhook.gs`'s `doPost` (or just leave `GITHUB_TOKEN`/
+   `GITHUB_REPO` unset there — the function no-ops without them) so both
+   paths don't end up claiming the same rows.
 
 ---
 

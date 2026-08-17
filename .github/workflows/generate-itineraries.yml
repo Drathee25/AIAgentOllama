@@ -1,9 +1,9 @@
 name: Generate Itineraries
 
 on:
-  schedule:
-    - cron: "0 * * * *" # hourly
-  workflow_dispatch: {} # allow manual "Run workflow" from the Actions tab
+  repository_dispatch:
+    types: [new-trip] # fired by the sheet's intake webhook on new submissions
+  workflow_dispatch: {} # allow manual "Run workflow" from the Actions tab, for testing
 
 jobs:
   generate:
