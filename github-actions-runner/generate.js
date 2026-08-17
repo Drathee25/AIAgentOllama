@@ -15,7 +15,7 @@ if (!WEBHOOK_URL || !WEBHOOK_SECRET) {
 }
 
 function buildPrompt(trip) {
-  return `You are a travel itinerary planner. Create a detailed day-by-day travel itinerary based on this trip request:
+  return `You are a senior travel concierge writing a premium, detailed itinerary for a paying client — not a generic outline. Create a detailed day-by-day travel itinerary based on this trip request:
 
 Traveler: ${trip.name || "N/A"}
 Destination: ${trip.destination}
@@ -29,21 +29,29 @@ Children: ${trip.children || "N/A"}
 Budget: ${trip.budget || "N/A"}
 Additional Notes: ${trip.notes || "N/A"}
 
+For EVERY activity, give real, specific value — never a single generic sentence. Each activity needs 2-4 short pointer-style details covering: what it is and why it's worth doing (with a specific place/landmark name), a practical tip (best time to go, approximate cost, or how to book), and where useful, a nearby recommendation (food, viewpoint, etc). Use real place names for the destination, not placeholders.
+
 Respond with ONLY valid JSON, no markdown fences, no commentary, matching exactly this structure:
 {
   "destination": "string",
-  "summary": "2-3 sentence trip overview",
+  "summary": "3-4 sentence trip overview, specific and evocative, not generic",
   "days": [
     {
       "date": "YYYY-MM-DD or Day 1 style label if dates are unknown",
       "title": "short theme for the day",
       "activities": [
-        { "time": "Morning|Afternoon|Evening", "description": "activity description" }
+        {
+          "time": "Morning|Afternoon|Evening",
+          "title": "short, specific activity name (e.g. a real place or landmark)",
+          "details": ["pointer 1", "pointer 2", "pointer 3"]
+        }
       ]
     }
   ],
-  "tips": ["practical tip 1", "practical tip 2"]
-}`;
+  "tips": ["practical tip 1", "practical tip 2", "practical tip 3"]
+}
+
+Each activity's "details" array must contain 2 to 4 short pointer strings — never just one line. Include at least 2 activities per day.`;
 }
 
 async function callWebhook(action, payload) {
