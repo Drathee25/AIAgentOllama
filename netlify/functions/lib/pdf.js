@@ -4,9 +4,9 @@ const PDFDocument = require("pdfkit");
 
 // 1TripWiser brand palette, sampled from the logo.
 const BRAND = {
-  navy: "#16213E",
-  gold: "#F5B921",
-  teal: "#1B8CA8",
+  navy: "#0F1525",
+  gold: "#FDB415",
+  teal: "#1B93B0",
   charcoal: "#333333",
   slate: "#6B7280",
   cardBg: "#F7F5EF",
