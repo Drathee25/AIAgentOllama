@@ -5,8 +5,12 @@
 //
 // One-time setup:
 //   1. Extensions > Apps Script properties (gear icon) > Script Properties:
-//        OLLAMA_URL   = https://your-public-ollama-host.example.com
+//        OLLAMA_URL   = https://your-space.hf.space  (a private HF Space, see huggingface-space/)
 //        OLLAMA_MODEL = llama3   (optional, defaults to llama3)
+//        HF_TOKEN     = hf_xxxxxxxx  (a Hugging Face access token with access
+//                       to the private Space above — required if OLLAMA_URL
+//                       points at one, since that's what keeps the endpoint
+//                       from being publicly callable by anyone else)
 //   2. Run createHourlyTrigger() once from the editor to schedule it.
 
 const SHEET_NAME = "Sheet1";
@@ -20,6 +24,7 @@ function processPendingTrips() {
   const props = PropertiesService.getScriptProperties();
   const ollamaUrl = props.getProperty("OLLAMA_URL");
   const ollamaModel = props.getProperty("OLLAMA_MODEL") || "llama3";
+  const hfToken = props.getProperty("HF_TOKEN");
   if (!ollamaUrl) {
     throw new Error("Set OLLAMA_URL in Script Properties (Project Settings) first.");
   }
@@ -53,7 +58,7 @@ function processPendingTrips() {
     if (String(trip.status).trim() !== "" || !trip.email || !trip.destination) return;
 
     try {
-      const itinerary = generateItinerary(trip, ollamaUrl, ollamaModel);
+      const itinerary = generateItinerary(trip, ollamaUrl, ollamaModel, hfToken);
       const pdfBlob = buildItineraryPdf(trip, itinerary);
       sendItineraryEmail(trip, itinerary, pdfBlob);
       sheet.getRange(rowNumber, STATUS_COL).setValue("Sent");
@@ -97,10 +102,14 @@ function buildPrompt_(trip) {
   );
 }
 
-function generateItinerary(trip, ollamaUrl, model) {
+function generateItinerary(trip, ollamaUrl, model, hfToken) {
+  const headers = { "Content-Type": "application/json" };
+  if (hfToken) headers["Authorization"] = "Bearer " + hfToken;
+
   const res = UrlFetchApp.fetch(ollamaUrl.replace(/\/$/, "") + "/api/generate", {
     method: "post",
     contentType: "application/json",
+    headers: headers,
     payload: JSON.stringify({
       model: model,
       prompt: buildPrompt_(trip),

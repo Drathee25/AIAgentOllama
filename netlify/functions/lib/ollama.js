@@ -39,10 +39,14 @@ async function generateItinerary(trip) {
     throw new Error("OLLAMA_URL env var is not set");
   }
   const model = process.env.OLLAMA_MODEL || "llama3";
+  const hfToken = process.env.HF_TOKEN;
+
+  const headers = { "Content-Type": "application/json" };
+  if (hfToken) headers["Authorization"] = `Bearer ${hfToken}`;
 
   const res = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({
       model,
       prompt: buildPrompt(trip),

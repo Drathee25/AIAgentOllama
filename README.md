@@ -28,11 +28,18 @@ too — same Ollama server, same generation cost.
 
 ## Important: Ollama hosting
 
-Netlify Functions are short-lived, stateless, serverless functions — they
-cannot run Ollama itself (no persistent process, no GPU/local model weights).
-You need an Ollama instance running somewhere reachable over HTTPS (a VPS,
-a home server behind a reverse proxy/tunnel, a managed Ollama host, etc.),
-and this project just calls it over HTTP via `OLLAMA_URL`.
+Neither Netlify Functions nor Google Apps Script can run Ollama itself —
+both are short-lived/serverless execution models, and Ollama needs a
+persistent, always-running process with multi-GB model weights loaded in
+memory. You need Ollama running somewhere that stays up continuously and
+is reachable over HTTPS, and this project just calls it via `OLLAMA_URL`.
+
+**Free option (no budget, no VPS, no card):** [`huggingface-space/`](huggingface-space/)
+is a ready-to-push Docker Space for Hugging Face's free CPU tier — see
+"1. Ollama server" below. Any other always-on host works too (VPS, home
+server behind a reverse proxy, managed Ollama host); Ollama has no
+built-in auth, so whatever you use should sit behind HTTPS with some form
+of access control.
 
 ## WhatsApp sending
 
@@ -77,20 +84,44 @@ A-N.
 
 ## Setup (Apps Script — the active path)
 
-### 1. Ollama server
+### 1. Ollama server (free: Hugging Face Space)
 
-Stand up Ollama somewhere reachable over HTTPS, e.g. a small VPS — Apps
-Script calls out over the public internet, so `localhost` will not work:
+1. Create a free [Hugging Face](https://huggingface.co) account (no card
+   required).
+2. Create a new **Space**: SDK = **Docker**, and set **Visibility to
+   Private** — this matters, since it's what stands in for auth (Ollama
+   itself has none). A public Space would let anyone who finds the URL
+   use your compute.
+3. Push this repo's [`huggingface-space/`](huggingface-space/) folder
+   contents (`Dockerfile` + `README.md`) as the Space's repo contents:
+   ```bash
+   git clone https://huggingface.co/spaces/<your-username>/<space-name> hf-space
+   cp huggingface-space/* hf-space/
+   cd hf-space
+   git add -A && git commit -m "Ollama space" && git push
+   ```
+4. Wait for the build to finish (Space → **Logs**) — it pulls `llama3`
+   (~4.7GB) during the build, so the first build takes a while. Once
+   built, the Space stays warm-ish; free-tier Spaces do sleep after a
+   period of inactivity and take a short while to wake on the next
+   request, so expect an occasional slow first call.
+5. Generate an access token: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) →
+   **New token** → Read access is enough. This is what authenticates
+   calls to your private Space.
+6. Your Space's URL is `https://<your-username>-<space-name>.hf.space`
+   — that's `OLLAMA_URL`. The token from step 5 is `HF_TOKEN` (see
+   Script Properties below).
 
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3
-ollama serve
-```
+Free CPU tier, no GPU — expect similar generation times to local testing
+(1-4 min per itinerary). Swap `llama3` for a different model by editing
+`huggingface-space/Dockerfile`'s `ollama pull` line (and the
+`OLLAMA_MODEL` script property to match) if you want something smaller/
+faster or larger/better.
 
-Put it behind a reverse proxy (nginx/Caddy) with HTTPS and, ideally, some
-form of access control (IP allowlist or an auth proxy) since Ollama has no
-built-in auth.
+Any other always-on HTTPS-reachable Ollama host (VPS, home server +
+reverse proxy) works too — `HF_TOKEN` is only relevant if you go the
+private-Space route; leave it unset otherwise and add your own auth
+scheme in front of Ollama if the host is exposed publicly.
 
 ### 2. Install the script
 
@@ -101,8 +132,10 @@ built-in auth.
    from this repo.
 3. In the editor's left sidebar, **Project Settings** (gear icon) → **Script
    Properties** → add:
-   - `OLLAMA_URL` = your public HTTPS Ollama endpoint
+   - `OLLAMA_URL` = your Ollama endpoint (e.g. the HF Space URL from step 1)
    - `OLLAMA_MODEL` = `llama3` (optional, this is the default)
+   - `HF_TOKEN` = your Hugging Face access token (only needed if `OLLAMA_URL`
+     points at a private HF Space, per step 1)
 4. Select `createHourlyTrigger` in the function dropdown at the top and
    click **Run**. The first run will prompt an OAuth consent screen (Apps
    Script needs permission to read/write the sheet, create/delete temp
@@ -146,7 +179,8 @@ project moves to a personal Google account, this path still works:
    Console, create a service account + JSON key, share the sheet with the
    service account's email as Editor, set `GOOGLE_SERVICE_ACCOUNT_JSON`
    (the full key JSON) and `GOOGLE_SHEET_ID`.
-2. **Ollama server**: same as above, set `OLLAMA_URL`.
+2. **Ollama server**: same as above, set `OLLAMA_URL` (and `HF_TOKEN` if
+   using a private HF Space).
 3. **Resend (email)**: sign up at [resend.com](https://resend.com), verify
    a sending domain, set `RESEND_API_KEY` and `EMAIL_FROM`.
 4. **Local dev**: `npm install`, `cp .env.example .env` (fill in values),
