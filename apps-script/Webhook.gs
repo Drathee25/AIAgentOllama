@@ -171,7 +171,7 @@ function buildItineraryPdf(trip, itinerary) {
 
   const title = body.appendParagraph((itinerary.destination || trip.destination || "").toUpperCase());
   title.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(16).setSpacingAfter(4);
-  title.editAsText().setBold(true).setFontSize(24).setForegroundColor(BRAND.navy);
+  title.editAsText().setBold(true).setItalic(false).setFontSize(24).setForegroundColor(BRAND.navy);
 
   const metaParts = [];
   if (trip.name) metaParts.push("Prepared for " + trip.name);
@@ -181,7 +181,7 @@ function buildItineraryPdf(trip, itinerary) {
   if (metaParts.length) {
     const meta = body.appendParagraph(metaParts.join("   |   "));
     meta.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingAfter(14);
-    meta.editAsText().setForegroundColor(BRAND.slate).setFontSize(10).setItalic(true);
+    meta.editAsText().setForegroundColor(BRAND.slate).setFontSize(10).setBold(false).setItalic(false);
   }
 
   if (itinerary.summary) {
@@ -198,19 +198,19 @@ function buildItineraryPdf(trip, itinerary) {
   if (itinerary.tips && itinerary.tips.length) {
     const tipsHeader = body.appendParagraph("TRAVEL TIPS");
     tipsHeader.setSpacingBefore(20).setSpacingAfter(6);
-    tipsHeader.editAsText().setBold(true).setForegroundColor(BRAND.teal).setFontSize(12);
+    tipsHeader.editAsText().setBold(true).setItalic(false).setForegroundColor(BRAND.teal).setFontSize(12);
 
     itinerary.tips.forEach((tip) => {
       const li = body.appendListItem(tip);
       li.setGlyphType(DocumentApp.GlyphType.BULLET).setSpacingAfter(3);
-      li.editAsText().setForegroundColor(BRAND.charcoal).setFontSize(10.5);
+      li.editAsText().setForegroundColor(BRAND.charcoal).setFontSize(10.5).setBold(false).setItalic(false);
     });
   }
 
   appendRule_(body, BRAND.ruleLight, 1);
   const footer = body.appendParagraph("Crafted with care by 1TripWiser  ·  www.1tripwiser.com");
   footer.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(10);
-  footer.editAsText().setForegroundColor(BRAND.slate).setFontSize(8.5).setItalic(true);
+  footer.editAsText().setForegroundColor(BRAND.slate).setFontSize(8.5).setBold(false).setItalic(false);
 
   doc.saveAndClose();
   const fileId = doc.getId();
@@ -260,7 +260,7 @@ function appendCard_(body, text, bgColor, textColor) {
   const cell = table.getRow(0).getCell(0);
   cell.setBackgroundColor(bgColor);
   cell.setPaddingTop(12).setPaddingBottom(12).setPaddingLeft(14).setPaddingRight(14);
-  cell.getChild(0).asParagraph().editAsText().setForegroundColor(textColor).setFontSize(11);
+  cell.getChild(0).asParagraph().editAsText().setForegroundColor(textColor).setFontSize(11).setBold(false).setItalic(false);
 }
 
 // A solid navy banner for each day's date/title.
@@ -274,7 +274,7 @@ function appendDayBanner_(body, dateLabel, dayTitle, idx) {
   const cell = table.getRow(0).getCell(0);
   cell.setBackgroundColor(BRAND.navy);
   cell.setPaddingTop(8).setPaddingBottom(8).setPaddingLeft(14).setPaddingRight(14);
-  cell.getChild(0).asParagraph().editAsText().setBold(true).setForegroundColor(BRAND.white).setFontSize(12.5);
+  cell.getChild(0).asParagraph().editAsText().setBold(true).setItalic(false).setForegroundColor(BRAND.white).setFontSize(12.5);
 }
 
 // One activity: a bold time-of-day + title line, followed by 2-4 bulleted
@@ -289,7 +289,7 @@ function appendActivity_(body, activity) {
   const para = body.appendParagraph(headingText);
   para.setSpacingBefore(10).setSpacingAfter(2);
   const t = para.editAsText();
-  t.setBold(true).setForegroundColor(BRAND.navy).setFontSize(11.5);
+  t.setBold(true).setItalic(false).setForegroundColor(BRAND.navy).setFontSize(11.5);
   if (timeLabel) {
     t.setForegroundColor(0, timeLabel.length - 1, BRAND.gold);
   }
@@ -298,7 +298,7 @@ function appendActivity_(body, activity) {
   details.forEach((detail) => {
     const li = body.appendListItem(detail);
     li.setGlyphType(DocumentApp.GlyphType.BULLET).setSpacingAfter(2);
-    li.editAsText().setForegroundColor(BRAND.charcoal).setFontSize(10.5);
+    li.editAsText().setForegroundColor(BRAND.charcoal).setFontSize(10.5).setBold(false).setItalic(false);
   });
 }
 
