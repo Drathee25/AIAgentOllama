@@ -121,6 +121,10 @@ function generateItinerary(trip, ollamaUrl, model, hfToken) {
       prompt: buildPrompt_(trip),
       format: "json",
       stream: false,
+      // Generous ceiling, not a detail trade-off - a full multi-day,
+      // multi-pointer itinerary comes in well under this. Just guards
+      // against a pathological runaway generation.
+      options: { num_predict: 4096 },
     }),
     muteHttpExceptions: true,
   });

@@ -4,6 +4,7 @@
 // for each via local Ollama, and POSTs the result back so the Web App can
 // build the PDF and send the email — no Google auth needed here at all.
 
+const os = require("os");
 const { setGlobalDispatcher, Agent } = require("undici");
 
 // Node's built-in fetch (undici under the hood) silently kills any request
@@ -20,6 +21,23 @@ const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+
+// Must match (or be >=) MAX_ROWS_PER_FETCH in apps-script/Webhook.gs, and
+// the OLLAMA_NUM_PARALLEL the workflow sets when starting the server - all
+// three need to agree for concurrent generations to actually help instead
+// of just queuing behind each other.
+const MAX_CONCURRENT = 2;
+
+// Split available CPU cores across however many generations might run at
+// once, instead of letting every concurrent request fight for all of them.
+const OLLAMA_THREADS = Math.max(1, Math.floor(os.cpus().length / MAX_CONCURRENT));
+
+// Generous ceiling on output length - never expected to trigger for a
+// normal (even very detailed) itinerary, it's purely a guard against a
+// pathological runaway generation eating the whole job timeout. Does not
+// trade off detail: a full multi-day, multi-pointer itinerary comes in
+// well under this.
+const MAX_OUTPUT_TOKENS = 4096;
 
 if (!WEBHOOK_URL || !WEBHOOK_SECRET) {
   console.error("WEBHOOK_URL and WEBHOOK_SECRET env vars must be set");
@@ -100,6 +118,10 @@ async function generateItinerary(trip) {
       prompt: buildPrompt(trip),
       format: "json",
       stream: false,
+      options: {
+        num_predict: MAX_OUTPUT_TOKENS,
+        num_thread: OLLAMA_THREADS,
+      },
     }),
   });
 
@@ -131,9 +153,9 @@ async function generateItinerary(trip) {
   }
 
   const trips = pendingRes.trips || [];
-  console.log(`Got ${trips.length} pending trip(s).`);
+  console.log(`Got ${trips.length} pending trip(s). Processing up to ${MAX_CONCURRENT} at a time.`);
 
-  for (const trip of trips) {
+  async function processTrip(trip) {
     console.log(`Row ${trip.rowNumber}: generating itinerary for "${trip.destination}"...`);
     const startedAt = Date.now();
     try {
@@ -152,6 +174,11 @@ async function generateItinerary(trip) {
       ).catch((e) => console.error("Also failed to report the error back to the webhook after retry:", e));
     }
   }
+
+  // Run concurrently (bounded by MAX_CONCURRENT, which matches how many
+  // rows getPending ever returns) instead of one-at-a-time, so a batch of
+  // pending trips doesn't wait on each other sequentially.
+  await Promise.all(trips.map(processTrip));
 
   console.log("Done.");
 })();

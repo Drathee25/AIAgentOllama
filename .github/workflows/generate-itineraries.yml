@@ -8,8 +8,9 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    # Generous: each Ollama call now gets up to 15 min of its own headroom
-    # (see generate.js), and up to MAX_ROWS_PER_FETCH rows run sequentially.
+    # Generous: each Ollama call gets up to 15 min of its own headroom (see
+    # generate.js). Rows in a batch now run concurrently, not sequentially,
+    # but this stays high to comfortably absorb install/setup + retries.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +29,10 @@ jobs:
         run: curl -fsSL https://ollama.com/install.sh | sh
 
       - name: Start Ollama server
+        env:
+          # Must match MAX_CONCURRENT in generate.js so concurrent requests
+          # actually run concurrently instead of queuing behind each other.
+          OLLAMA_NUM_PARALLEL: 2
         run: |
           ollama serve &
           for i in $(seq 1 30); do

@@ -60,6 +60,10 @@ async function generateItinerary(trip) {
       prompt: buildPrompt(trip),
       format: "json",
       stream: false,
+      // Generous ceiling, not a detail trade-off - a full multi-day,
+      // multi-pointer itinerary comes in well under this. Just guards
+      // against a pathological runaway generation.
+      options: { num_predict: 4096 },
     }),
   });
 
