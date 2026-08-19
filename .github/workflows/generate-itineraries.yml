@@ -8,10 +8,12 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    # Generous: each Ollama call gets up to 15 min of its own headroom (see
-    # generate.js). Rows in a batch now run concurrently, not sequentially,
-    # but this stays high to comfortably absorb install/setup + retries.
-    timeout-minutes: 45
+    # Generous: each Ollama call gets up to 25 min of its own headroom (see
+    # generate.js), since itineraries now scale to the full trip duration
+    # instead of being capped at ~3 days. Rows in a batch run concurrently,
+    # not sequentially, but this stays high to comfortably absorb
+    # install/setup + retries on top of a long generation.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
