@@ -175,7 +175,7 @@ function buildItineraryPdf(trip, itinerary) {
 
   const metaParts = [];
   if (trip.name) metaParts.push("Prepared for " + trip.name);
-  const dateBit = [trip.travelDate, trip.duration].filter(Boolean).join(" · ");
+  const dateBit = [trip.travelDate, trip.duration].filter(Boolean).join(" \u00B7 ");
   if (dateBit) metaParts.push(dateBit);
   if (trip.departingFrom) metaParts.push("Departing from " + trip.departingFrom);
   if (metaParts.length) {
@@ -208,7 +208,7 @@ function buildItineraryPdf(trip, itinerary) {
   }
 
   appendRule_(body, BRAND.ruleLight, 1);
-  const footer = body.appendParagraph("Crafted with care by 1TripWiser  ·  www.1tripwiser.com");
+  const footer = body.appendParagraph("Crafted with care by 1TripWiser  \u00B7  www.1tripwiser.com");
   footer.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(10);
   footer.editAsText().setForegroundColor(BRAND.slate).setFontSize(8.5).setBold(false).setItalic(false);
 
@@ -268,7 +268,7 @@ function appendDayBanner_(body, dateLabel, dayTitle, idx) {
   const spacer = body.appendParagraph("");
   spacer.setSpacingBefore(idx === 0 ? 6 : 20).setSpacingAfter(0);
 
-  const label = dateLabel + (dayTitle ? "   ·   " + dayTitle : "");
+  const label = dateLabel + (dayTitle ? "   \u00B7   " + dayTitle : "");
   const table = body.appendTable([[label]]);
   table.setBorderWidth(0);
   const cell = table.getRow(0).getCell(0);

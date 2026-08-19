@@ -58,7 +58,7 @@ function buildItineraryPdf(trip, itinerary) {
       .text(
         [
           trip.name && `Prepared for ${trip.name}`,
-          [trip.travelDate, trip.duration].filter(Boolean).join(" · "),
+          [trip.travelDate, trip.duration].filter(Boolean).join(" \u00B7 "),
           trip.departingFrom && `Departing from ${trip.departingFrom}`,
         ]
           .filter(Boolean)
@@ -88,7 +88,7 @@ function buildItineraryPdf(trip, itinerary) {
     (itinerary.days || []).forEach((day, idx) => {
       if (idx > 0) doc.moveDown(0.6);
 
-      const bannerLabel = `${day.date || `Day ${idx + 1}`}${day.title ? "   ·   " + day.title : ""}`;
+      const bannerLabel = `${day.date || `Day ${idx + 1}`}${day.title ? "   \u00B7   " + day.title : ""}`;
       const bannerY = doc.y;
       const bannerHeight = 26;
       doc.rect(doc.page.margins.left, bannerY, pageWidth, bannerHeight).fill(BRAND.navy);
@@ -134,7 +134,7 @@ function buildItineraryPdf(trip, itinerary) {
       .font("Helvetica-Oblique")
       .fontSize(8.5)
       .fillColor(BRAND.slate)
-      .text("Crafted with care by 1TripWiser  ·  www.1tripwiser.com", { align: "center" });
+      .text("Crafted with care by 1TripWiser  \u00B7  www.1tripwiser.com", { align: "center" });
 
     doc.end();
   });
