@@ -21,6 +21,12 @@
 //      Who has access: Anyone. Authorize when prompted.
 //   4. Copy the deployment URL into the WEBHOOK_URL GitHub Actions
 //      repo secret.
+//   5. (Optional) WhatsApp delivery - see the setup notes above
+//      sendItineraryWhatsApp_ further down this file. Requires a verified
+//      WhatsApp Business phone number and an approved message template;
+//      until WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID /
+//      WHATSAPP_TEMPLATE_NAME are set, this step is skipped entirely and
+//      email delivery is unaffected.
 
 const SHEET_NAME = "Sheet1";
 const START_ROW = 2;
@@ -131,7 +137,17 @@ function submitResult_(body) {
   try {
     const pdfBlob = buildItineraryPdf(trip, itinerary);
     sendItineraryEmail(trip, itinerary, pdfBlob);
-    sheet.getRange(rowNumber, STATUS_COL).setValue("Sent");
+
+    // Best-effort: a WhatsApp failure (or it simply not being configured
+    // yet) must never block email delivery or mark the row as an error.
+    let statusNote = "";
+    try {
+      sendItineraryWhatsApp_(trip, itinerary, pdfBlob);
+    } catch (waErr) {
+      statusNote = " (WhatsApp failed: " + waErr.message + ")";
+    }
+
+    sheet.getRange(rowNumber, STATUS_COL).setValue(("Sent" + statusNote).slice(0, 500));
     sheet.getRange(rowNumber, SENT_AT_COL).setValue(new Date());
     return { status: "sent" };
   } catch (err) {
@@ -310,6 +326,137 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
     body: "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n",
     attachments: [pdfBlob],
   });
+}
+
+// Sends the itinerary PDF over WhatsApp via Meta's WhatsApp Business Cloud
+// API, alongside the email. Entirely optional and additive: silently does
+// nothing until WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, and
+// WHATSAPP_TEMPLATE_NAME are set as Script Properties, or if the trip has
+// no usable phone number - see the one-time setup notes below. Called from
+// its own try/catch in submitResult_, so a WhatsApp failure never blocks
+// the email or marks the row as an error.
+//
+// One-time setup (all in Project Settings > Script Properties):
+//   WHATSAPP_TOKEN               = a permanent access token for a Meta app
+//                                   with the whatsapp_business_messaging
+//                                   permission, for a VERIFIED WhatsApp
+//                                   Business phone number (not the default
+//                                   test number - a test number can only
+//                                   message phone numbers you've manually
+//                                   added as testers in the Meta dashboard).
+//   WHATSAPP_PHONE_NUMBER_ID     = the Phone Number ID of that verified
+//                                   sender number (from the Meta app's
+//                                   WhatsApp > API Setup page).
+//   WHATSAPP_TEMPLATE_NAME       = the name of an APPROVED message template
+//                                   with a Document header component. A
+//                                   template is required because this is a
+//                                   business-initiated message with no
+//                                   prior customer message to reply within
+//                                   - Meta rejects a freeform document
+//                                   message as a first contact.
+//   WHATSAPP_TEMPLATE_LANG       = the template's language code (optional,
+//                                   defaults to "en_US").
+//   WHATSAPP_DEFAULT_COUNTRY_CODE = digits-only country code (e.g. "91")
+//                                   to prepend when a stored phone number
+//                                   has none (optional - without it, a
+//                                   10-digit number is sent as-is and will
+//                                   likely fail).
+//
+// If your approved template's body has a different number/order of
+// placeholders than the two used below (traveler name, destination),
+// update the "body" component's parameters to match.
+function sendItineraryWhatsApp_(trip, itinerary, pdfBlob) {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty("WHATSAPP_TOKEN");
+  const phoneNumberId = props.getProperty("WHATSAPP_PHONE_NUMBER_ID");
+  const templateName = props.getProperty("WHATSAPP_TEMPLATE_NAME");
+  if (!token || !phoneNumberId || !templateName) return; // not configured yet
+
+  const toPhone = normalizeWhatsAppPhone_(trip.phone);
+  if (!toPhone) return; // no usable phone number on this trip
+
+  const mediaId = uploadWhatsAppMedia_(token, phoneNumberId, pdfBlob);
+  sendWhatsAppDocumentTemplate_(token, phoneNumberId, toPhone, templateName, mediaId, pdfBlob, trip, itinerary);
+}
+
+// Strips a raw phone number down to digits and prepends
+// WHATSAPP_DEFAULT_COUNTRY_CODE when the number looks like it's missing
+// one (a bare 10-digit number, or an 11-digit number with a domestic trunk
+// "0" prefix). Returns null if there's nothing usable.
+function normalizeWhatsAppPhone_(rawPhone) {
+  if (!rawPhone) return null;
+  const digits = String(rawPhone).replace(/\D/g, "");
+  if (!digits) return null;
+
+  const defaultCc = PropertiesService.getScriptProperties().getProperty("WHATSAPP_DEFAULT_COUNTRY_CODE");
+  if (defaultCc) {
+    if (digits.length === 10) return defaultCc + digits;
+    if (digits.length === 11 && digits.charAt(0) === "0") return defaultCc + digits.slice(1);
+  }
+  return digits;
+}
+
+// Uploads the PDF to Meta's media endpoint so it can be referenced by id in
+// the template message below - WhatsApp document messages can't carry an
+// inline attachment the way email can.
+function uploadWhatsAppMedia_(token, phoneNumberId, pdfBlob) {
+  const res = UrlFetchApp.fetch("https://graph.facebook.com/v19.0/" + phoneNumberId + "/media", {
+    method: "post",
+    headers: { Authorization: "Bearer " + token },
+    payload: {
+      messaging_product: "whatsapp",
+      type: "application/pdf",
+      file: pdfBlob,
+    },
+    muteHttpExceptions: true,
+  });
+
+  const json = JSON.parse(res.getContentText());
+  if (!json.id) {
+    throw new Error("media upload failed: " + res.getContentText());
+  }
+  return json.id;
+}
+
+function sendWhatsAppDocumentTemplate_(token, phoneNumberId, toPhone, templateName, mediaId, pdfBlob, trip, itinerary) {
+  const templateLang = PropertiesService.getScriptProperties().getProperty("WHATSAPP_TEMPLATE_LANG") || "en_US";
+  const destination = itinerary.destination || trip.destination;
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to: toPhone,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: templateLang },
+      components: [
+        {
+          type: "header",
+          parameters: [{ type: "document", document: { id: mediaId, filename: pdfBlob.getName() } }],
+        },
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: trip.name || "there" },
+            { type: "text", text: destination },
+          ],
+        },
+      ],
+    },
+  };
+
+  const res = UrlFetchApp.fetch("https://graph.facebook.com/v19.0/" + phoneNumberId + "/messages", {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + token },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+
+  const json = JSON.parse(res.getContentText());
+  if (json.error) {
+    throw new Error("send failed: " + JSON.stringify(json.error));
+  }
 }
 
 function jsonResponse_(obj) {

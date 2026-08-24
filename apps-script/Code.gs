@@ -61,7 +61,15 @@ function processPendingTrips() {
       const itinerary = generateItinerary(trip, ollamaUrl, ollamaModel, hfToken);
       const pdfBlob = buildItineraryPdf(trip, itinerary);
       sendItineraryEmail(trip, itinerary, pdfBlob);
-      sheet.getRange(rowNumber, STATUS_COL).setValue("Sent");
+
+      let statusNote = "";
+      try {
+        sendItineraryWhatsApp_(trip, itinerary, pdfBlob);
+      } catch (waErr) {
+        statusNote = " (WhatsApp failed: " + waErr.message + ")";
+      }
+
+      sheet.getRange(rowNumber, STATUS_COL).setValue(("Sent" + statusNote).slice(0, 500));
       sheet.getRange(rowNumber, SENT_AT_COL).setValue(new Date());
     } catch (err) {
       sheet.getRange(rowNumber, STATUS_COL).setValue(("Error: " + err.message).slice(0, 500));
@@ -325,6 +333,97 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
     body: "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n",
     attachments: [pdfBlob],
   });
+}
+
+// See the matching function in apps-script/Webhook.gs for full setup notes
+// (WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TEMPLATE_NAME /
+// WHATSAPP_TEMPLATE_LANG / WHATSAPP_DEFAULT_COUNTRY_CODE Script Properties).
+// Silently no-ops until configured, so it's always safe to call.
+function sendItineraryWhatsApp_(trip, itinerary, pdfBlob) {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty("WHATSAPP_TOKEN");
+  const phoneNumberId = props.getProperty("WHATSAPP_PHONE_NUMBER_ID");
+  const templateName = props.getProperty("WHATSAPP_TEMPLATE_NAME");
+  if (!token || !phoneNumberId || !templateName) return;
+
+  const toPhone = normalizeWhatsAppPhone_(trip.phone);
+  if (!toPhone) return;
+
+  const mediaId = uploadWhatsAppMedia_(token, phoneNumberId, pdfBlob);
+  sendWhatsAppDocumentTemplate_(token, phoneNumberId, toPhone, templateName, mediaId, pdfBlob, trip, itinerary);
+}
+
+function normalizeWhatsAppPhone_(rawPhone) {
+  if (!rawPhone) return null;
+  const digits = String(rawPhone).replace(/\D/g, "");
+  if (!digits) return null;
+
+  const defaultCc = PropertiesService.getScriptProperties().getProperty("WHATSAPP_DEFAULT_COUNTRY_CODE");
+  if (defaultCc) {
+    if (digits.length === 10) return defaultCc + digits;
+    if (digits.length === 11 && digits.charAt(0) === "0") return defaultCc + digits.slice(1);
+  }
+  return digits;
+}
+
+function uploadWhatsAppMedia_(token, phoneNumberId, pdfBlob) {
+  const res = UrlFetchApp.fetch("https://graph.facebook.com/v19.0/" + phoneNumberId + "/media", {
+    method: "post",
+    headers: { Authorization: "Bearer " + token },
+    payload: {
+      messaging_product: "whatsapp",
+      type: "application/pdf",
+      file: pdfBlob,
+    },
+    muteHttpExceptions: true,
+  });
+
+  const json = JSON.parse(res.getContentText());
+  if (!json.id) {
+    throw new Error("media upload failed: " + res.getContentText());
+  }
+  return json.id;
+}
+
+function sendWhatsAppDocumentTemplate_(token, phoneNumberId, toPhone, templateName, mediaId, pdfBlob, trip, itinerary) {
+  const templateLang = PropertiesService.getScriptProperties().getProperty("WHATSAPP_TEMPLATE_LANG") || "en_US";
+  const destination = itinerary.destination || trip.destination;
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to: toPhone,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: templateLang },
+      components: [
+        {
+          type: "header",
+          parameters: [{ type: "document", document: { id: mediaId, filename: pdfBlob.getName() } }],
+        },
+        {
+          type: "body",
+          parameters: [
+            { type: "text", text: trip.name || "there" },
+            { type: "text", text: destination },
+          ],
+        },
+      ],
+    },
+  };
+
+  const res = UrlFetchApp.fetch("https://graph.facebook.com/v19.0/" + phoneNumberId + "/messages", {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + token },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  });
+
+  const json = JSON.parse(res.getContentText());
+  if (json.error) {
+    throw new Error("send failed: " + JSON.stringify(json.error));
+  }
 }
 
 // Run once manually from the editor to schedule hourly processing.
