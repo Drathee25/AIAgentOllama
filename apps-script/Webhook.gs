@@ -355,7 +355,8 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
 //                                   - Meta rejects a freeform document
 //                                   message as a first contact.
 //   WHATSAPP_TEMPLATE_LANG       = the template's language code (optional,
-//                                   defaults to "en_US").
+//                                   defaults to "en", matching the
+//                                   1TripWiser template's language).
 //   WHATSAPP_DEFAULT_COUNTRY_CODE = digits-only country code (e.g. "91")
 //                                   to prepend when a stored phone number
 //                                   has none (optional - without it, a
@@ -419,7 +420,7 @@ function uploadWhatsAppMedia_(token, phoneNumberId, pdfBlob) {
 }
 
 function sendWhatsAppDocumentTemplate_(token, phoneNumberId, toPhone, templateName, mediaId, pdfBlob, trip, itinerary) {
-  const templateLang = PropertiesService.getScriptProperties().getProperty("WHATSAPP_TEMPLATE_LANG") || "en_US";
+  const templateLang = PropertiesService.getScriptProperties().getProperty("WHATSAPP_TEMPLATE_LANG") || "en";
   const destination = itinerary.destination || trip.destination;
 
   const payload = {

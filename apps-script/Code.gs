@@ -386,7 +386,7 @@ function uploadWhatsAppMedia_(token, phoneNumberId, pdfBlob) {
 }
 
 function sendWhatsAppDocumentTemplate_(token, phoneNumberId, toPhone, templateName, mediaId, pdfBlob, trip, itinerary) {
-  const templateLang = PropertiesService.getScriptProperties().getProperty("WHATSAPP_TEMPLATE_LANG") || "en_US";
+  const templateLang = PropertiesService.getScriptProperties().getProperty("WHATSAPP_TEMPLATE_LANG") || "en";
   const destination = itinerary.destination || trip.destination;
 
   const payload = {
