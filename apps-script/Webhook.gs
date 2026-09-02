@@ -28,6 +28,17 @@
 //      WHATSAPP_TEMPLATE_NAME are set, this step is skipped entirely and
 //      email delivery is unaffected.
 
+// Itinerary emails are sent as this address, with a BCC so leads are
+// captured on a second inbox automatically. IMPORTANT: for the "from" to
+// actually take effect (rather than Gmail silently sending as the
+// executing account), SENDER_EMAIL must be added and verified as a
+// "Send mail as" alias in that Google account's Gmail settings
+// (Settings > Accounts and Import > Send mail as). Until that's done,
+// sendItineraryEmail below automatically falls back to the default sending
+// identity so email delivery is never blocked - the BCC still applies.
+const SENDER_EMAIL = "1tripwiser@gmail.com";
+const LEAD_BCC = "anuranjana@advivifymediagroup.com";
+
 const SHEET_NAME = "Sheet1";
 const START_ROW = 2;
 const START_COL = 1; // A
@@ -320,12 +331,20 @@ function appendActivity_(body, activity) {
 
 function sendItineraryEmail(trip, itinerary, pdfBlob) {
   const destination = itinerary.destination || trip.destination;
-  MailApp.sendEmail({
-    to: trip.email,
-    subject: "Your " + destination + " Itinerary",
-    body: "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n",
-    attachments: [pdfBlob],
-  });
+  const subject = "Your " + destination + " Itinerary";
+  const body = "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n";
+  const options = { attachments: [pdfBlob], bcc: LEAD_BCC, from: SENDER_EMAIL, name: "1TripWiser" };
+
+  try {
+    GmailApp.sendEmail(trip.email, subject, body, options);
+  } catch (err) {
+    // SENDER_EMAIL isn't verified as a "Send mail as" alias on this account
+    // yet - fall back to the default sending identity (BCC still applies)
+    // so the customer still gets their itinerary instead of the row
+    // failing outright.
+    delete options.from;
+    GmailApp.sendEmail(trip.email, subject, body, options);
+  }
 }
 
 // Sends the itinerary PDF over WhatsApp via Meta's WhatsApp Business Cloud

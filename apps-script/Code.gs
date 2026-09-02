@@ -13,6 +13,10 @@
 //                       from being publicly callable by anyone else)
 //   2. Run createHourlyTrigger() once from the editor to schedule it.
 
+// See the matching constants and setup note in apps-script/Webhook.gs.
+const SENDER_EMAIL = "1tripwiser@gmail.com";
+const LEAD_BCC = "anuranjana@advivifymediagroup.com";
+
 const SHEET_NAME = "Sheet1";
 const START_ROW = 2;
 const START_COL = 1; // A
@@ -327,12 +331,16 @@ function appendActivity_(body, activity) {
 
 function sendItineraryEmail(trip, itinerary, pdfBlob) {
   const destination = itinerary.destination || trip.destination;
-  MailApp.sendEmail({
-    to: trip.email,
-    subject: "Your " + destination + " Itinerary",
-    body: "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n",
-    attachments: [pdfBlob],
-  });
+  const subject = "Your " + destination + " Itinerary";
+  const body = "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n";
+  const options = { attachments: [pdfBlob], bcc: LEAD_BCC, from: SENDER_EMAIL, name: "1TripWiser" };
+
+  try {
+    GmailApp.sendEmail(trip.email, subject, body, options);
+  } catch (err) {
+    delete options.from;
+    GmailApp.sendEmail(trip.email, subject, body, options);
+  }
 }
 
 // See the matching function in apps-script/Webhook.gs for full setup notes
