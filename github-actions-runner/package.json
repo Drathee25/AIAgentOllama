@@ -4,6 +4,10 @@
   "private": true,
   "description": "Runs inside GitHub Actions to generate itineraries via a local Ollama instance.",
   "dependencies": {
+    "@fontsource/jost": "^5.3.0",
+    "@fontsource/lora": "^5.3.0",
+    "@fontsource/playfair-display": "^5.3.0",
+    "puppeteer": "^25.10.0",
     "undici": "^6.19.0"
   }
 }

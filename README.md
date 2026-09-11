@@ -93,11 +93,35 @@ see "Why this path" above for why the architecture is shaped the way it is.
    where **Status** is blank, and immediately marks them `Processing` (so
    an overlapping run can't double-claim them).
 5. For each trip, it builds a prompt and asks the local Ollama for a
-   structured JSON itinerary, then POSTs `{action: "submitResult", ...}`
-   back to the Web App.
-6. `Webhook.gs` renders the itinerary into a PDF (Google Docs → PDF
-   export), emails it via `MailApp`, and writes `Sent` (or `Error: ...`)
-   plus a timestamp into the Status/Sent At columns.
+   structured JSON itinerary, renders the branded PDF with headless Chrome
+   ([`github-actions-runner/pdf.js`](github-actions-runner/pdf.js)), then
+   POSTs `{action: "submitResult", itinerary, pdfBase64, ...}` back to the
+   Web App.
+6. `Webhook.gs` emails that PDF, and writes `Sent` (or `Error: ...`) plus a
+   timestamp into the Status/Sent At columns. If the runner couldn't render
+   a PDF, it falls back to building one itself (Google Docs → PDF export).
+
+**PDF design.** `pdf.js` follows the approved "TripWiser Itinerary" design
+file: Playfair Display / Lora / Jost (embedded from `@fontsource`, no
+network needed), a running `1TRIPWISER` header and contact footer on every
+page, and fixed pagination — page 1 is the overview (headline, trip facts,
+traveller details, trip team, trip at a glance), day-by-day starts on a
+new page with every day block kept whole, and the tips / next steps /
+closing banner follow without being split. It's rendered in Chrome rather
+than Google Docs because Docs can't keep blocks from splitting across
+pages. To preview a layout change locally, run `renderItineraryPdf(trip,
+itinerary)` from `pdf.js` (needs Node 22+ and `npm install` in
+`github-actions-runner/`). `PDF_PAPER=a4` switches from US Letter to A4.
+
+**Email design.** `buildItineraryEmailHtml_` in `Webhook.gs` follows the
+approved "TripWiser Itinerary Email" design (600px table layout, Georgia /
+Arial for email-client safety): headline, trip facts, main button with the
+PDF's page count and size, a first-three-days preview, the Team 1TripWiser
+card, and Sign up / Blog / Tribe rows where the design had sample packages.
+Set the optional `ITINERARY_FOLDER_ID` Script Property to make the main
+button a real "Download the full itinerary (PDF)" link. This saves each PDF
+to that Drive folder with view-by-link sharing, so only enable it if that's
+acceptable for the traveller details inside.
 
 Because claiming happens immediately on fetch and results are gated on
 `rowNumber`, re-running (manually via the Actions tab, or from another

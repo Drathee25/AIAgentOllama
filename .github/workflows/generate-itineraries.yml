@@ -19,7 +19,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Puppeteer (PDF rendering, see github-actions-runner/pdf.js)
+          # requires Node 22+.
+          node-version: "22"
 
       - name: Cache Ollama models
         uses: actions/cache@v4
@@ -47,6 +49,7 @@ jobs:
       - name: Pull model (no-op if already cached)
         run: ollama pull llama3
 
+      # Also downloads the Chrome build Puppeteer uses to render the PDF.
       - name: Install runner dependencies
         working-directory: github-actions-runner
         run: npm install

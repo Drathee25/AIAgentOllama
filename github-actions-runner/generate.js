@@ -1,11 +1,13 @@
 // Runs inside GitHub Actions (see .github/workflows/generate-itineraries.yml)
 // against a freshly-installed local Ollama on the runner. Fetches pending
 // trips from the Apps Script Web App (Webhook.gs), generates an itinerary
-// for each via local Ollama, and POSTs the result back so the Web App can
-// build the PDF and send the email — no Google auth needed here at all.
+// for each via local Ollama, renders the branded PDF with headless Chrome
+// (see pdf.js), and POSTs both back so the Web App can send the email — no
+// Google auth needed here at all.
 
 const os = require("os");
 const { setGlobalDispatcher, Agent } = require("undici");
+const { renderItineraryPdf, closeBrowser, parseCalendarDate } = require("./pdf");
 
 // Node's built-in fetch (undici under the hood) silently kills any request
 // that takes longer than 5 minutes (its default headersTimeout/bodyTimeout),
@@ -72,6 +74,16 @@ function resolveDayCount(durationStr) {
   return null;
 }
 
+// "2026-09-24 (Thursday)" - an unambiguous calendar date for the prompt.
+// Sheet dates can arrive as a UTC timestamp of local midnight, which the
+// model would otherwise read as the previous day.
+function formatTravelDateForPrompt(value) {
+  const date = parseCalendarDate(value);
+  if (!date) return value || "N/A";
+  const weekday = date.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  return `${date.toISOString().slice(0, 10)} (${weekday})`;
+}
+
 function buildPrompt(trip) {
   const dayCount = resolveDayCount(trip.duration);
   const dayCountInstruction = dayCount
@@ -83,7 +95,7 @@ function buildPrompt(trip) {
 Traveler: ${trip.name || "N/A"}
 Destination: ${trip.destination}
 Departing From: ${trip.departingFrom || "N/A"}
-Travel Date: ${trip.travelDate || "N/A"}
+Travel Date (day 1 of the trip): ${formatTravelDateForPrompt(trip.travelDate)}
 Duration: ${trip.duration || "N/A"}
 Preferred Time to Travel: ${trip.timePreference || "N/A"}
 Trip Type: ${trip.tripType || "N/A"}
@@ -99,10 +111,13 @@ For EVERY activity, give real, specific value — never a single generic sentenc
 Respond with ONLY valid JSON, no markdown fences, no commentary, matching exactly this structure:
 {
   "destination": "string",
+  "title": "evocative trip title of 4-8 words naming the destination and 1-2 key places, e.g. 'Kashmir Escape with Gulmarg and Pahalgam'",
+  "titleHighlights": ["1-2 place names copied exactly as they appear in title, excluding the destination itself"],
   "summary": "3-4 sentence trip overview, specific and evocative, not generic",
   "days": [
     {
-      "date": "YYYY-MM-DD or Day 1 style label if dates are unknown",
+      "date": "YYYY-MM-DD, counting from the Travel Date as day 1 (or a 'Day 1' style label if dates are unknown)",
+      "location": "where the day is based, or the route for travel days, e.g. 'Srinagar' or 'Srinagar → Gulmarg · 56 km'",
       "title": "short theme for the day",
       "activities": [
         {
@@ -113,10 +128,12 @@ Respond with ONLY valid JSON, no markdown fences, no commentary, matching exactl
       ]
     }
   ],
-  "tips": ["practical tip 1", "practical tip 2", "practical tip 3"]
+  "tips": [
+    { "label": "one or two word topic, e.g. 'Layers' or 'Permits'", "text": "one or two sentence practical tip specific to this destination and season" }
+  ]
 }
 
-Each activity's "details" array must contain 2 to 4 short pointer strings — never just one line. Include at least 2 activities per day.`;
+Each activity's "details" array must contain 2 to 4 short pointer strings — never just one line. Include at least 2 activities per day, and use Morning, Afternoon and Evening across the day where it makes sense. Give exactly 3 or 6 tips.`;
 }
 
 async function callWebhook(action, payload) {
@@ -183,8 +200,22 @@ async function generateItinerary(trip) {
     try {
       const itinerary = await withRetry(() => generateItinerary(trip), `Ollama generation for row ${trip.rowNumber}`);
       console.log(`Row ${trip.rowNumber}: generated in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+
+      // Best-effort: if Chrome can't render for any reason, submit without
+      // a PDF and Webhook.gs falls back to its Google Docs builder, so the
+      // traveller still gets an itinerary.
+      const payload = { rowNumber: trip.rowNumber, itinerary };
+      try {
+        const { buffer, fileName } = await renderItineraryPdf(trip, itinerary);
+        payload.pdfBase64 = buffer.toString("base64");
+        payload.pdfName = fileName;
+        console.log(`Row ${trip.rowNumber}: rendered ${fileName} (${Math.round(buffer.length / 1024)} KB)`);
+      } catch (pdfErr) {
+        console.error(`Row ${trip.rowNumber}: PDF render failed, falling back to the Docs PDF:`, pdfErr.message);
+      }
+
       const result = await withRetry(
-        () => callWebhook("submitResult", { rowNumber: trip.rowNumber, itinerary }),
+        () => callWebhook("submitResult", payload),
         `submitResult for row ${trip.rowNumber}`
       );
       console.log(`Row ${trip.rowNumber}: ${JSON.stringify(result)}`);
@@ -201,6 +232,7 @@ async function generateItinerary(trip) {
   // rows getPending ever returns) instead of one-at-a-time, so a batch of
   // pending trips doesn't wait on each other sequentially.
   await Promise.all(trips.map(processTrip));
+  await closeBrowser();
 
   console.log("Done.");
 })();

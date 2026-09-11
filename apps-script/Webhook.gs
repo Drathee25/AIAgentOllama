@@ -22,7 +22,11 @@
 //      Who has access: Anyone. Authorize when prompted.
 //   4. Copy the deployment URL into the WEBHOOK_URL GitHub Actions
 //      repo secret.
-//   5. (Optional) WhatsApp delivery - see the setup notes above
+//   5. (Optional) ITINERARY_FOLDER_ID = a Drive folder ID. Makes the
+//      email's main button "Download the full itinerary (PDF)" by saving
+//      each PDF there with view-by-link sharing - see sharePdfLink_. Left
+//      unset, the PDF is attachment-only and the button is the Sign Up CTA.
+//   6. (Optional) WhatsApp delivery - see the setup notes above
 //      sendItineraryWhatsApp_ further down this file. Requires a verified
 //      WhatsApp Business phone number and an approved message template;
 //      until WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID /
@@ -79,15 +83,32 @@ function getSheet_() {
   return SpreadsheetApp.openById(sheetId).getSheetByName(SHEET_NAME);
 }
 
-function rowToTrip_(row, rowNumber) {
+// Date cells come back as Date objects, which JSON-serialize as a UTC
+// timestamp of local midnight (24 Sep IST -> "2026-09-23T18:30:00.000Z") -
+// that shifted every generated day back by one and printed raw date strings
+// in the PDF. Pin them to the calendar day in the sheet's own time zone.
+function formatDateCell_(value, timeZone) {
+  if (Object.prototype.toString.call(value) !== "[object Date]" || isNaN(value.getTime())) return value;
+  return Utilities.formatDate(value, timeZone, "yyyy-MM-dd");
+}
+
+// "2026-09-24" -> "24 Sep 2026" for display; anything else passes through.
+function prettyDate_(value) {
+  const m = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return String(value || "");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return Number(m[3]) + " " + months[Number(m[2]) - 1] + " " + m[1];
+}
+
+function rowToTrip_(row, rowNumber, timeZone) {
   return {
     rowNumber: rowNumber,
-    timestamp: row[0],
+    timestamp: formatDateCell_(row[0], timeZone),
     name: row[1],
     phone: row[2],
     email: row[3],
     destination: row[4],
-    travelDate: row[5],
+    travelDate: formatDateCell_(row[5], timeZone),
     duration: row[6],
     timePreference: row[7],
     tripType: row[8],
@@ -110,11 +131,12 @@ function getAndClaimPendingTrips_() {
 
   const range = sheet.getRange(START_ROW, START_COL, lastRow - START_ROW + 1, NUM_COLS);
   const values = range.getValues();
+  const timeZone = sheet.getParent().getSpreadsheetTimeZone();
 
   const claimed = [];
   for (let i = 0; i < values.length && claimed.length < MAX_ROWS_PER_FETCH; i++) {
     const rowNumber = START_ROW + i;
-    const trip = rowToTrip_(values[i], rowNumber);
+    const trip = rowToTrip_(values[i], rowNumber, timeZone);
     if (String(trip.status).trim() !== "" || !trip.email || !trip.destination) continue;
 
     claimed.push(trip);
@@ -142,10 +164,16 @@ function submitResult_(body) {
   }
 
   const row = sheet.getRange(rowNumber, START_COL, 1, NUM_COLS).getValues()[0];
-  const trip = rowToTrip_(row, rowNumber);
+  const trip = rowToTrip_(row, rowNumber, sheet.getParent().getSpreadsheetTimeZone());
 
   try {
-    const pdfBlob = buildItineraryPdf(trip, itinerary);
+    // The GitHub Actions runner renders the branded PDF with headless Chrome
+    // (github-actions-runner/pdf.js) - that's what matches the approved
+    // design's layout and pagination. The Google Docs builder below is only
+    // a fallback for when the runner couldn't render one.
+    const pdfBlob = body.pdfBase64
+      ? Utilities.newBlob(Utilities.base64Decode(body.pdfBase64), "application/pdf", body.pdfName || "itinerary.pdf")
+      : buildItineraryPdf(trip, itinerary);
     sendItineraryEmail(trip, itinerary, pdfBlob);
 
     // Best-effort: a WhatsApp failure (or it simply not being configured
@@ -257,7 +285,11 @@ function buildItineraryPdf(trip, itinerary) {
   if (itinerary.tips && itinerary.tips.length) {
     appendEyebrow_(body, "TRAVEL TIPS", BRAND.teal, 26);
     itinerary.tips.forEach((tip) => {
-      const li = body.appendListItem(tip);
+      // Tips are { label, text } objects from the current prompt, plain
+      // strings from older runs.
+      const tipText = typeof tip === "string" ? tip : [tip && tip.label, tip && tip.text].filter(Boolean).join(": ");
+      if (!tipText) return;
+      const li = body.appendListItem(tipText);
       li.setGlyphType(DocumentApp.GlyphType.BULLET).setSpacingAfter(4);
       li.editAsText().setFontFamily("Lora").setForegroundColor(BRAND.charcoal).setFontSize(11).setBold(false).setItalic(false);
     });
@@ -292,7 +324,7 @@ function appendTitle_(body, destination) {
 function buildFacts_(trip, itinerary) {
   const facts = [];
   if (trip.duration) facts.push({ label: "Duration", value: String(trip.duration) });
-  if (trip.travelDate) facts.push({ label: "Travel Date", value: String(trip.travelDate) });
+  if (trip.travelDate) facts.push({ label: "Travel Date", value: prettyDate_(trip.travelDate) });
 
   const travellerBits = [];
   if (trip.adults) travellerBits.push(trip.adults + (Number(trip.adults) === 1 ? " adult" : " adults"));
@@ -622,19 +654,29 @@ function appendLinksRow_(body, links, colorHex, fontSize) {
 
 function sendItineraryEmail(trip, itinerary, pdfBlob) {
   const destination = itinerary.destination || trip.destination;
-  const name = trip.name || "there";
-  const subject = "Your " + destination + " Itinerary";
+  const firstName = firstName_(trip.name);
+  const subject = "Your " + destination + " itinerary is ready" + (firstName ? ", " + firstName : "");
+
+  const pdfInfo = describePdf_(pdfBlob);
+  pdfInfo.url = sharePdfLink_(pdfBlob);
+
   const plainBody =
-    "Hi " + name + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n\n" +
+    "Hi " + (firstName || "there") + ",\n\n" +
+    "Your itinerary for " + destination + " is attached as a PDF" + (pdfInfo.url ? " (you can also download it here: " + pdfInfo.url + ")" : "") + ".\n\n" +
+    "Anything you want moved, added or slowed down - reply to this email or WhatsApp us and we will re-cut the plan.\n\n" +
+    "WhatsApp: " + TEAM_WHATSAPP_URL + "\n" +
     "Sign up free at 1TripWiser: " + SIGNUP_URL + "\n" +
-    "WhatsApp us: " + TEAM_WHATSAPP_URL + "\n" +
     "Blogs: " + BLOG_URL + "\n" +
-    "Join the Tribe: " + TRIBE_URL + "\n";
+    "Join the Tribe: " + TRIBE_URL + "\n\n" +
+    TEAM_NAME + "\n";
   const options = {
     attachments: [pdfBlob],
     from: SENDER_EMAIL,
-    name: "1TripWiser",
-    htmlBody: buildItineraryEmailHtml_(trip, itinerary),
+    name: TEAM_NAME,
+    // The email invites a reply - make sure it reaches the team inbox even
+    // when the "from" alias below isn't verified and Gmail falls back.
+    replyTo: SENDER_EMAIL,
+    htmlBody: buildItineraryEmailHtml_(trip, itinerary, pdfInfo),
   };
 
   try {
@@ -648,156 +690,333 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
   }
 }
 
-// Branded HTML email matching the reference design: dark header/footer
-// bars, a pink eyebrow + serif headline hero, a trip-facts strip, a
-// three-day preview, the "your trip team" card (Team 1TripWiser, not an
-// individual), and Blog/Tribe/social links. Georgia/Arial rather than the
-// PDF's Playfair/Lora/Jost, since email clients can't load custom web
-// fonts reliably - table-based layout with inline styles throughout for
-// the same reason (Outlook desktop especially ignores modern CSS).
-function buildItineraryEmailHtml_(trip, itinerary) {
-  const destination = itinerary.destination || trip.destination;
-  const name = trip.name || "there";
+// Page count and size for the "attached · 5 pages · 137 KB" line under the
+// email's main button. Page count is best-effort (0 = unknown, left out).
+function describePdf_(pdfBlob) {
+  const bytes = pdfBlob.getBytes();
+  const raw = Utilities.newBlob(bytes).getDataAsString("ISO-8859-1");
+  return {
+    kb: Math.max(1, Math.round(bytes.length / 1024)),
+    pages: (raw.match(/\/Type\s*\/Page[^s]/g) || []).length,
+  };
+}
+
+// Optional: the design's main button is "Download the full itinerary (PDF)",
+// which needs the PDF hosted somewhere. Set the ITINERARY_FOLDER_ID Script
+// Property to a Drive folder ID and each PDF is saved there with
+// view-by-link sharing, and the button links to it. Off by default - the PDF
+// contains the traveller's name, phone and email, so turning on public-link
+// sharing is a deliberate choice. Until then the button is the Sign Up CTA
+// and the PDF is attachment-only. Never blocks the email.
+function sharePdfLink_(pdfBlob) {
+  const folderId = PropertiesService.getScriptProperties().getProperty("ITINERARY_FOLDER_ID");
+  if (!folderId) return null;
+  try {
+    const file = DriveApp.getFolderById(folderId).createFile(pdfBlob.copyBlob());
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    return "https://drive.google.com/uc?export=download&id=" + file.getId();
+  } catch (err) {
+    return null;
+  }
+}
+
+function firstName_(name) {
+  return String(name || "").trim().split(/\s+/)[0] || "";
+}
+
+function escHtml_(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// "Seven", "twelve" - the design spells small numbers out ("Seven days in
+// Kashmir", "Days four to seven"); anything above twenty stays numeric.
+function numberWord_(n, capitalize) {
+  const words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
+  const word = n >= 0 && n <= 20 ? words[n] : String(n);
+  return capitalize ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+}
+
+// "a, b and c"
+function joinList_(items) {
+  if (items.length <= 1) return items.join("");
+  return items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
+}
+
+// "2026-09-24" -> a UTC-midnight Date (no time zone drift), or null.
+function parseIsoDate_(value) {
+  const m = String(value || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) : null;
+}
+
+// "14 – 20 April", or "28 Sep – 4 Oct" across a month boundary.
+function dateRangeLabel_(start, dayCount) {
+  const short = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const long = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const end = new Date(start.getTime() + Math.max(dayCount - 1, 0) * 86400000);
+  if (end.getTime() === start.getTime()) return start.getUTCDate() + " " + long[start.getUTCMonth()];
+  if (start.getUTCMonth() === end.getUTCMonth()) return start.getUTCDate() + " – " + end.getUTCDate() + " " + long[end.getUTCMonth()];
+  return start.getUTCDate() + " " + short[start.getUTCMonth()] + " – " + end.getUTCDate() + " " + short[end.getUTCMonth()];
+}
+
+// "Thu 24 Sep"
+function dayLabel_(date) {
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return weekdays[date.getUTCDay()] + " " + date.getUTCDate() + " " + months[date.getUTCMonth()];
+}
+
+// Branded HTML email matching the approved "TripWiser Itinerary Email"
+// design: dark header bar, pink eyebrow + serif headline ("Seven days in
+// Ladakh, *planned around you*."), a trip-facts strip, the main PDF button
+// with page count/size, a first-three-days preview, the trip-team card,
+// a "keep exploring" list, and a dark footer. Georgia/Arial rather than the
+// PDF's Playfair/Lora/Jost, since email clients can't load custom web fonts
+// reliably - table-based layout with inline styles throughout for the same
+// reason (Outlook desktop especially ignores modern CSS).
+//
+// Two deliberate departures from the design, which uses sample data: the
+// "You may also like" packages-with-prices list becomes Sign up / Blog /
+// Tribe rows in the same style (there's no real package data to show), and
+// the planner photo becomes a 1TW monogram for the shared Team 1TripWiser
+// identity. Every sheet/LLM value is HTML-escaped.
+function buildItineraryEmailHtml_(trip, itinerary, pdfInfo) {
+  pdfInfo = pdfInfo || {};
+  const SERIF = "Georgia,'Times New Roman',serif";
+  const SANS = "Arial,Helvetica,sans-serif";
+  const PAPER = "#FFFDFB";
+  const RULE = "#E3E6EC";
+
+  const destination = String(itinerary.destination || trip.destination || "your trip");
+  const firstName = firstName_(trip.name);
   const days = itinerary.days || [];
+  const start = parseIsoDate_(trip.travelDate);
 
-  const factCell = (label, value, isLast) =>
-    '<td style="padding:14px 12px 14px ' + (isLast ? "12px" : "0") + "; " + (isLast ? "" : "border-right:1px solid #E3E6EC;") + ' font-family:Arial, Helvetica, sans-serif;">' +
-    '<div style="font-size:9px; letter-spacing:0.14em; text-transform:uppercase; color:#8A93A3; font-weight:bold; margin-bottom:7px;">' + label + "</div>" +
-    "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:17px; color:#0D1526;\">" + value + "</div>" +
-    "</td>";
+  const eyebrow = (text, color, marginBottom) =>
+    '<div style="font-family:' + SANS + "; font-weight:bold; font-size:10px; line-height:1; letter-spacing:0.2em; text-transform:uppercase; color:" + color + "; margin-bottom:" + marginBottom + 'px;">' + escHtml_(text) + "</div>";
+  const microLabel = (text, color, marginBottom) =>
+    '<div style="font-family:' + SANS + "; font-weight:bold; font-size:9px; line-height:1; letter-spacing:0.16em; text-transform:uppercase; color:" + color + "; margin-bottom:" + marginBottom + 'px;">' + escHtml_(text) + "</div>";
+  const section = (padding, inner) => '<tr><td style="padding:' + padding + "; background:" + PAPER + ';">' + inner + "</td></tr>";
+  const table = (width, style, rows) =>
+    '<table role="presentation" cellpadding="0" cellspacing="0" border="0"' + (width ? ' width="' + width + '"' : "") + ' style="' + (width ? "width:" + width + "px; " : "") + "border-collapse:collapse;" + (style || "") + '">' + rows + "</table>";
+  const button = (label, url, bg, color, border) =>
+    table(0, "", '<tr><td align="center" bgcolor="' + bg + '" style="background:' + bg + "; " + (border ? "border:1px solid " + border + "; padding:10px 16px;" : "padding:11px 16px;") + ' border-radius:4px;"><a href="' + url + '" style="display:block; font-family:' + SANS + "; font-weight:bold; font-size:11px; line-height:1.1; letter-spacing:0.08em; text-transform:uppercase; color:" + color + '; text-decoration:none;">' + escHtml_(label) + "</a></td></tr>");
 
+  // Inbox preview text (hidden in the body).
+  const summary = String(itinerary.summary || "").trim();
+  const preheader = (summary.match(/^[^.!?]+[.!?]/) || [summary || "Your day-by-day plan for " + destination + " is attached."])[0];
+
+  // Hero
+  const headline = days.length
+    ? numberWord_(days.length, true) + (days.length === 1 ? " day" : " days") + " in " + escHtml_(destination)
+    : "Your " + escHtml_(destination) + " trip";
+  const hero = section(
+    "34px 28px 10px",
+    eyebrow("Your itinerary is ready", "#E5127D", 14) +
+      "<div style=\"font-family:" + SERIF + "; font-size:32px; line-height:1.18; color:#0D1526; margin-bottom:14px;\">" + headline + ', <span style="font-style:italic; color:#E5127D;">planned around you</span>.</div>' +
+      "<div style=\"font-family:" + SERIF + '; font-size:15px; line-height:1.65; color:#4B5565;">' +
+      escHtml_((firstName ? firstName + ", here is the plan we put together." : "Here is the plan we put together.") + (summary ? " " + summary : "") + " The full itinerary is attached as a PDF.") +
+      "</div>"
+  );
+
+  // Trip facts strip
   const facts = [];
-  if (trip.travelDate) facts.push(["Dates", String(trip.travelDate)]);
-  if (days.length) facts.push(["Duration", days.length + (days.length === 1 ? " day" : " days")]);
+  if (start) facts.push(["Dates", dateRangeLabel_(start, days.length || 1)]);
+  else if (trip.travelDate) facts.push(["Dates", prettyDate_(trip.travelDate)]);
+  if (days.length) facts.push(["Duration", days.length > 1 ? days.length - 1 + "N / " + days.length + "D" : "1 day"]);
   else if (trip.duration) facts.push(["Duration", String(trip.duration)]);
   const travellerBits = [];
-  if (trip.adults) travellerBits.push(trip.adults + (Number(trip.adults) === 1 ? " adult" : " adults"));
-  if (trip.children) travellerBits.push(trip.children + (Number(trip.children) === 1 ? " child" : " children"));
+  if (Number(trip.adults)) travellerBits.push(trip.adults + (Number(trip.adults) === 1 ? " adult" : " adults"));
+  if (Number(trip.children)) travellerBits.push(trip.children + (Number(trip.children) === 1 ? " child" : " children"));
   if (travellerBits.length) facts.push(["Travellers", travellerBits.join(", ")]);
-  const factsRow = facts.map((f, i) => factCell(f[0], f[1], i === facts.length - 1)).join("");
+  const factWidth = facts.length ? Math.floor(544 / facts.length) : 0;
+  const factsStrip = facts.length
+    ? section(
+        "22px 28px 6px",
+        table(
+          544,
+          " border-top:2px solid #0D1526; border-bottom:1px solid " + RULE + ";",
+          "<tr>" +
+            facts
+              .map((f, i) => {
+                const first = i === 0;
+                const last = i === facts.length - 1;
+                return (
+                  '<td width="' + factWidth + '" valign="top" style="width:' + factWidth + "px; padding:14px " + (last ? "0" : "12px") + " 14px " + (first ? "0" : "12px") + ";" + (last ? "" : " border-right:1px solid " + RULE + ";") + '">' +
+                  microLabel(f[0], "#8A93A3", 7) +
+                  "<div style=\"font-family:" + SERIF + '; font-size:18px; line-height:1.2; color:#0D1526;">' + escHtml_(f[1]) + "</div></td>"
+                );
+              })
+              .join("") +
+            "</tr>"
+        )
+      )
+    : "";
 
+  // Main button + PDF details
+  const pdfBits = [pdfInfo.url ? "Also attached to this email" : "Your full itinerary is attached to this email"];
+  if (pdfInfo.pages) pdfBits.push(pdfInfo.pages + (pdfInfo.pages === 1 ? " page" : " pages"));
+  if (pdfInfo.kb) pdfBits.push(pdfInfo.kb + " KB");
+  const mainButton = section(
+    "26px 28px 8px",
+    table(
+      544,
+      "",
+      '<tr><td align="center" bgcolor="#E5127D" style="background:#E5127D; padding:15px 22px; border-radius:4px;"><a href="' +
+        (pdfInfo.url || SIGNUP_URL) +
+        '" style="display:block; font-family:' + SANS + '; font-weight:bold; font-size:13px; line-height:1.1; letter-spacing:0.1em; text-transform:uppercase; color:#FFFFFF; text-decoration:none;">' +
+        (pdfInfo.url ? "Download the full itinerary (PDF)" : "Sign up free at 1TripWiser") +
+        "</a></td></tr>"
+    ) +
+      '<div style="font-family:' + SANS + '; font-size:11px; line-height:1.5; color:#8A93A3; margin-top:9px; text-align:center;">' + escHtml_(pdfBits.join(" · ")) + "</div>"
+  );
+
+  // First three days
   const previewCount = Math.min(3, days.length);
-  const dayPreview = days
+  const dayRows = days
     .slice(0, previewCount)
     .map((day, idx) => {
-      const num = idx + 1 < 10 ? "0" + (idx + 1) : String(idx + 1);
-      const firstActivity = (day.activities || [])[0];
-      const summary = firstActivity ? (firstActivity.details && firstActivity.details[0]) || firstActivity.title || "" : "";
-      const borderTop = idx > 0 ? "border-top:1px solid #E3E6EC;" : "";
+      const date = start ? new Date(start.getTime() + idx * 86400000) : parseIsoDate_(day.date);
+      const label = [date ? dayLabel_(date) : "Day " + (idx + 1), day.location].filter(Boolean).join(" · ");
+      const activityTitles = (day.activities || []).map((a) => a && a.title).filter(Boolean);
+      const line = day.summary || (activityTitles.length ? joinList_(activityTitles) + "." : "");
+      const border = idx > 0 ? " border-top:1px solid " + RULE + ";" : "";
       return (
-        '<tr><td width="44" valign="top" style="width:44px; padding:14px 0; ' + borderTop + " font-family:Georgia,'Times New Roman',serif; font-size:24px; color:#E5127D;\">" + num + "</td>" +
-        '<td valign="top" style="padding:14px 0; ' + borderTop + '">' +
-        '<div style="font-family:Arial, Helvetica, sans-serif; font-size:9px; letter-spacing:0.14em; text-transform:uppercase; color:#1B93B0; font-weight:bold; margin-bottom:5px;">' + (day.date || "Day " + (idx + 1)) + "</div>" +
-        "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:15px; color:#0D1526; margin-bottom:5px;\">" + (day.title || "") + "</div>" +
-        (summary ? "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:12.5px; color:#5B6475; line-height:1.55;\">" + summary + "</div>" : "") +
+        '<tr><td width="54" valign="top" style="width:54px; padding:14px 0;' + border + " font-family:" + SERIF + '; font-size:26px; line-height:1; color:#E5127D;">' + (idx + 1 < 10 ? "0" : "") + (idx + 1) + "</td>" +
+        '<td valign="top" style="padding:14px 0;' + border + '">' +
+        microLabel(label, "#1B93B0", 6) +
+        "<div style=\"font-family:" + SERIF + '; font-size:16px; line-height:1.3; color:#0D1526; margin-bottom:6px;">' + escHtml_(day.title || "Day " + (idx + 1)) + "</div>" +
+        (line ? "<div style=\"font-family:" + SERIF + '; font-size:13px; line-height:1.6; color:#5B6475;">' + escHtml_(line) + "</div>" : "") +
         "</td></tr>"
       );
     })
     .join("");
 
-  const remainingDays = days.length - previewCount;
-  const remainingNote =
-    remainingDays > 0
-      ? '<tr><td colspan="2" style="padding:12px 0 0; border-top:1px solid #E3E6EC; font-family:Georgia,\'Times New Roman\',serif; font-size:12.5px; color:#8A93A3;">The remaining ' +
-        remainingDays +
-        (remainingDays === 1 ? " day is" : " days are") +
-        " in the attached PDF.</td></tr>"
-      : "";
+  let remainingNote = "";
+  const remaining = days.length - previewCount;
+  if (remaining > 0) {
+    const places = [];
+    days.slice(previewCount).forEach((day) => {
+      const place = String(day.location || "").split(" · ")[0].split("→").pop().trim();
+      if (place && places.indexOf(place) === -1 && places.length < 3) places.push(place);
+    });
+    const range = remaining === 1 ? "Day " + numberWord_(days.length) : "Days " + numberWord_(previewCount + 1) + " to " + numberWord_(days.length);
+    remainingNote =
+      '<tr><td colspan="2" style="padding:14px 0 0; border-top:1px solid ' + RULE + "; font-family:" + SERIF + '; font-size:13px; line-height:1.6; color:#8A93A3;">' +
+      escHtml_(range + (places.length ? " — " + joinList_(places) + " — " : " ") + (remaining === 1 ? "is" : "are") + " in the PDF.") +
+      "</td></tr>";
+  }
+
+  const preview = dayRows
+    ? section(
+        "26px 28px 4px",
+        eyebrow(previewCount === 1 ? "Your first day" : "The first " + numberWord_(previewCount) + " days", "#1B93B0", 16) +
+          table(544, " border-top:1px solid " + RULE + ";", dayRows + remainingNote)
+      )
+    : "";
+
+  // Trip team card
+  const teamCard = section(
+    "28px 28px 0",
+    table(
+      544,
+      " background:#F6F7F9;",
+      "<tr>" +
+        '<td width="96" valign="top" style="width:96px; padding:20px 0 20px 20px;">' +
+        table(76, "", '<tr><td width="76" height="76" align="center" valign="middle" bgcolor="#0D1526" style="width:76px; height:76px; background:#0D1526; border-radius:38px; font-family:' + SERIF + '; font-size:22px; line-height:1; color:#FFFDFB;">1<span style="font-style:italic; color:#E5127D;">TW</span></td></tr>') +
+        "</td>" +
+        '<td valign="top" style="padding:20px 20px 20px 14px;">' +
+        microLabel("Your trip team", "#8A93A3", 8) +
+        "<div style=\"font-family:" + SERIF + '; font-size:20px; line-height:1.2; color:#0D1526; margin-bottom:5px;">' + escHtml_(TEAM_NAME) + "</div>" +
+        '<div style="font-family:' + SANS + '; font-size:12px; line-height:1.55; color:#5B6475; margin-bottom:12px;">Itinerary specialists for ' + escHtml_(destination) + " and beyond. We are on WhatsApp before, during and after your trip.</div>" +
+        table(
+          0,
+          "",
+          '<tr><td align="center" style="padding:0 8px 0 0;">' +
+            button("Call us", "tel:" + TEAM_WHATSAPP_DISPLAY.replace(/[^+\d]/g, ""), "#0D1526", "#FFFFFF") +
+            '</td><td align="center">' +
+            button("WhatsApp us", TEAM_WHATSAPP_URL, PAPER, "#1B93B0", "#1B93B0") +
+            "</td></tr>"
+        ) +
+        "</td></tr>"
+    )
+  );
+
+  // Keep exploring - same row style as the design's "You may also like"
+  const exploreRows = [
+    ["Free account", "Sign up to save trips and plan the next one", "Sign up", SIGNUP_URL],
+    ["Travel stories", "Guides and trip ideas on the 1TripWiser blog", "Read", BLOG_URL],
+    ["Community", "Join the Tribe of travellers planning wiser trips", "Join", TRIBE_URL],
+  ]
+    .map((row, i, all) => {
+      const borders = "border-top:1px solid " + RULE + ";" + (i === all.length - 1 ? " border-bottom:1px solid " + RULE + ";" : "");
+      return (
+        '<tr><td valign="top" style="padding:14px 0; ' + borders + '">' +
+        microLabel(row[0], "#8A93A3", 6) +
+        "<div style=\"font-family:" + SERIF + '; font-size:16px; line-height:1.3; color:#0D1526;"><a href="' + row[3] + '" style="color:#0D1526; text-decoration:none;">' + escHtml_(row[1]) + "</a></div>" +
+        '</td><td width="120" align="right" valign="bottom" style="width:120px; padding:14px 0; ' + borders + '">' +
+        "<a href=\"" + row[3] + "\" style=\"font-family:" + SERIF + '; font-size:16px; line-height:1.3; color:#E5127D; text-decoration:none;">' + row[2] + " &rarr;</a>" +
+        "</td></tr>"
+      );
+    })
+    .join("");
+  const explore = section(
+    "30px 28px 6px",
+    eyebrow("Keep exploring", "#1B93B0", 6) +
+      "<div style=\"font-family:" + SERIF + '; font-size:22px; line-height:1.25; color:#0D1526; margin-bottom:16px;">More from 1TripWiser while you plan</div>' +
+      table(544, "", exploreRows)
+  );
+
+  const closingNote = section(
+    "26px 28px 34px",
+    "<div style=\"font-family:" + SERIF + '; font-size:13px; line-height:1.65; color:#5B6475;">Anything you want moved, added or slowed down, reply to this email or message us on WhatsApp and we will re-cut the plan around you.</div>'
+  );
 
   const socialLink = (label, url) => '<a href="' + url + '" style="color:#1B93B0; text-decoration:none;">' + label + "</a>";
+  const footer =
+    '<tr><td style="padding:0;">' +
+    table(
+      600,
+      " background:#0D1526;",
+      '<tr><td align="center" style="padding:26px 28px 14px;">' +
+        '<div style="font-family:' + SANS + '; font-weight:bold; font-size:12px; line-height:1; letter-spacing:0.22em; color:#FFFDFB; margin-bottom:14px;">1TRIPWISER</div>' +
+        '<div style="font-family:' + SANS + '; font-size:12px; line-height:1.8; color:#9AA4B4;">' +
+        Object.keys(SOCIAL_LINKS).map((label) => socialLink(label, SOCIAL_LINKS[label])).join(" &nbsp;&middot;&nbsp; ") +
+        "</div></td></tr>" +
+        '<tr><td align="center" style="padding:14px 28px 28px; border-top:1px solid #1E2740;">' +
+        '<div style="font-family:' + SANS + '; font-size:11px; line-height:1.7; color:#7D879A;">' +
+        escHtml_(TEAM_NAME) + " &middot; " + escHtml_(SENDER_EMAIL) + " &middot; " + escHtml_(TEAM_WHATSAPP_DISPLAY) +
+        "<br>You are getting this because you requested an itinerary on 1tripwiser.com.</div>" +
+        "</td></tr>"
+    ) +
+    "</td></tr>";
 
   return (
-    '<div style="background:#ECEEF2; padding:28px 16px; font-family:Arial, Helvetica, sans-serif;">' +
-    '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; max-width:600px; margin:0 auto; border-collapse:collapse; background:#FFFDFB;">' +
+    '<div style="background:#ECEEF2; padding:28px 16px; font-family:' + SANS + ';">' +
+    '<div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#ECEEF2; opacity:0;">' + escHtml_(preheader) + "</div>" +
+    '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; max-width:600px; margin:0 auto; border-collapse:collapse; background:' + PAPER + ';">' +
     '<tr><td style="padding:0;">' +
-    '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; border-collapse:collapse; background:#0D1526;"><tr>' +
-    '<td style="padding:18px 28px; font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:13px; letter-spacing:0.22em; color:#FFFDFB;" align="left">1TRIPWISER</td>' +
-    '<td style="padding:18px 28px; font-family:Arial, Helvetica, sans-serif; font-size:10px; letter-spacing:0.14em; color:#8A93A3; text-transform:uppercase;" align="right">Wiser Trips &middot; Better Memories</td>' +
-    "</tr></table></td></tr>" +
-    '<tr><td style="padding:34px 28px 10px; background:#FFFDFB;">' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:#E5127D; margin-bottom:14px;">Your itinerary is ready</div>' +
-    "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:28px; line-height:1.2; color:#0D1526; margin-bottom:14px;\">Your <span style=\"color:#E5127D; font-style:italic;\">" +
-    destination +
-    "</span> trip, planned around you.</div>" +
-    "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:14.5px; line-height:1.65; color:#4B5565;\">Hi " +
-    name +
-    ", here is the plan we put together. " +
-    (itinerary.summary || "") +
-    " The full itinerary is attached as a PDF.</div>" +
+    table(
+      600,
+      " background:#0D1526;",
+      "<tr>" +
+        '<td align="left" style="padding:18px 28px; font-family:' + SANS + '; font-weight:bold; font-size:13px; line-height:1; letter-spacing:0.22em; color:#FFFDFB;">1TRIPWISER</td>' +
+        '<td align="right" style="padding:18px 28px; font-family:' + SANS + '; font-size:10px; line-height:1; letter-spacing:0.14em; color:#8A93A3; text-transform:uppercase;">Wiser Trips &middot; Better Memories</td>' +
+        "</tr>"
+    ) +
     "</td></tr>" +
-    (factsRow
-      ? '<tr><td style="padding:22px 28px 6px; background:#FFFDFB;"><table role="presentation" cellpadding="0" cellspacing="0" border="0" width="544" style="width:544px; border-collapse:collapse; border-top:2px solid #0D1526; border-bottom:1px solid #E3E6EC;"><tr>' +
-        factsRow +
-        "</tr></table></td></tr>"
-      : "") +
-    '<tr><td style="padding:26px 28px 6px; background:#FFFDFB; text-align:center;">' +
-    '<a href="' +
-    SIGNUP_URL +
-    '" style="display:inline-block; background:#E5127D; color:#FFFFFF; text-decoration:none; font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:13px; letter-spacing:0.08em; text-transform:uppercase; padding:15px 28px; border-radius:4px;">Sign Up Free at 1TripWiser</a>' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-size:11px; color:#8A93A3; margin-top:9px;">Your full itinerary is also attached as a PDF</div>' +
-    "</td></tr>" +
-    (dayPreview
-      ? '<tr><td style="padding:26px 28px 4px; background:#FFFDFB;">' +
-        '<div style="font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:#1B93B0; margin-bottom:16px;">A look at your trip</div>' +
-        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="544" style="width:544px; border-collapse:collapse;">' +
-        dayPreview +
-        remainingNote +
-        "</table></td></tr>"
-      : "") +
-    '<tr><td style="padding:28px 28px 0; background:#FFFDFB;">' +
-    '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="544" style="width:544px; border-collapse:collapse; background:#F7F2EA;"><tr>' +
-    '<td style="padding:20px 20px 20px 20px;" valign="top">' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:9px; letter-spacing:0.18em; text-transform:uppercase; color:#8A93A3; margin-bottom:8px;">Your trip team</div>' +
-    "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:19px; color:#0D1526; margin-bottom:5px;\">" +
-    TEAM_NAME +
-    "</div>" +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#5B6475; margin-bottom:14px;">Here to help before, during, and after your trip.</div>' +
-    '<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>' +
-    '<td style="padding:0 8px 0 0;"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background:#0D1526; padding:11px 16px; border-radius:4px;"><a href="' +
-    SIGNUP_URL +
-    '" style="display:block; font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:#FFFFFF; text-decoration:none;">Sign Up Free</a></td></tr></table></td>' +
-    '<td><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background:#FFFDFB; border:1px solid #1B93B0; padding:10px 16px; border-radius:4px;"><a href="' +
-    TEAM_WHATSAPP_URL +
-    '" style="display:block; font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:#1B93B0; text-decoration:none;">WhatsApp Us</a></td></tr></table></td>' +
-    "</tr></table>" +
-    "</td></tr></table>" +
-    "</td></tr>" +
-    '<tr><td style="padding:28px 28px 6px; background:#FFFDFB;">' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:#1B93B0; margin-bottom:10px;">Explore more</div>' +
-    '<a href="' +
-    BLOG_URL +
-    "\" style=\"display:inline-block; font-family:Georgia,'Times New Roman',serif; font-size:14px; color:#0D1526; text-decoration:none; margin-right:18px;\">See Blogs &rarr;</a>" +
-    '<a href="' +
-    TRIBE_URL +
-    "\" style=\"display:inline-block; font-family:Georgia,'Times New Roman',serif; font-size:14px; color:#0D1526; text-decoration:none;\">Join the Tribe &rarr;</a>" +
-    "</td></tr>" +
-    '<tr><td style="padding:22px 28px 34px; background:#FFFDFB;">' +
-    "<div style=\"font-family:Georgia,'Times New Roman',serif; font-size:13px; line-height:1.65; color:#5B6475;\">Anything you want moved, added or slowed down? Reply to this email or message us on WhatsApp and we will re-cut the plan.</div>" +
-    "</td></tr>" +
-    '<tr><td style="padding:0;">' +
-    '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; border-collapse:collapse; background:#0D1526;">' +
-    '<tr><td style="padding:26px 28px 14px;" align="center">' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-weight:bold; font-size:12px; letter-spacing:0.22em; color:#FFFDFB; margin-bottom:14px;">1TRIPWISER</div>' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:1.8; color:#9AA4B4;">' +
-    socialLink("Instagram", SOCIAL_LINKS.Instagram) +
-    " &nbsp;&middot;&nbsp; " +
-    socialLink("Facebook", SOCIAL_LINKS.Facebook) +
-    " &nbsp;&middot;&nbsp; " +
-    socialLink("Twitter", SOCIAL_LINKS.Twitter) +
-    " &nbsp;&middot;&nbsp; " +
-    socialLink("YouTube", SOCIAL_LINKS.YouTube) +
-    " &nbsp;&middot;&nbsp; " +
-    socialLink("LinkedIn", SOCIAL_LINKS.LinkedIn) +
-    "</div></td></tr>" +
-    '<tr><td style="padding:14px 28px 28px; border-top:1px solid #1E2740;" align="center">' +
-    '<div style="font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:1.7; color:#7D879A;">' +
-    TEAM_NAME +
-    " &middot; " +
-    SENDER_EMAIL +
-    " &middot; " +
-    TEAM_WHATSAPP_DISPLAY +
-    "<br>You're receiving this because you requested an itinerary on 1tripwiser.com.</div>" +
-    "</td></tr></table></td></tr>" +
+    hero +
+    factsStrip +
+    mainButton +
+    preview +
+    teamCard +
+    explore +
+    closingNote +
+    footer +
     "</table></div>"
   );
 }
