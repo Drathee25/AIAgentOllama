@@ -182,17 +182,32 @@ function generateItinerary(trip, ollamaUrl, model, hfToken) {
 }
 
 // 1TripWiser brand palette, sampled from the logo.
+// See apps-script/Webhook.gs for how these were sampled from the live site.
 const BRAND = {
-  navy: "#0F1525",
+  navy: "#0D1526",
   gold: "#FDB415",
   teal: "#1B93B0",
   crimson: "#D83550",
+  pink: "#E5127D",
   forest: "#2E6B35",
   charcoal: "#333333",
   slate: "#6B7280",
-  cardBg: "#F7F5EF",
+  cardBg: "#F7F2EA",
   ruleLight: "#E5E1D3",
   white: "#FFFFFF",
+};
+
+const SITE_URL = "https://1tripwiser.com";
+const SIGNUP_URL = "https://1tripwiser.com/register/";
+const BLOG_URL = "https://1tripwiser.com/blog-affiliates/";
+const TRIBE_URL = "https://1tripwiser.com/tribe/";
+const LOGO_URL = "https://1tripwiser.com/wp-content/uploads/2026/08/cropped-image-3-scaled-1.png";
+const SOCIAL_LINKS = {
+  Instagram: "https://www.instagram.com/1tripwiser/",
+  Facebook: "https://www.facebook.com/1tripwiser/",
+  Twitter: "https://twitter.com/1tripwiser",
+  YouTube: "https://www.youtube.com/1tripwiser",
+  LinkedIn: "https://www.linkedin.com/company/1tripwiser/",
 };
 
 // Base64-encoded PNG of the 1TripWiser logo, embedded directly in the
@@ -204,13 +219,14 @@ function buildItineraryPdf(trip, itinerary) {
   const doc = DocumentApp.create("tmp-itinerary-" + Utilities.getUuid());
   const body = doc.getBody();
   body.setMarginTop(40).setMarginBottom(40).setMarginLeft(54).setMarginRight(54);
+  body.editAsText().setFontFamily("Poppins");
 
   appendLogo_(body);
   appendRule_(body, BRAND.gold, 2);
 
   const title = body.appendParagraph((itinerary.destination || trip.destination || "").toUpperCase());
   title.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(16).setSpacingAfter(4);
-  title.editAsText().setBold(true).setItalic(false).setFontSize(24).setForegroundColor(BRAND.navy);
+  title.editAsText().setBold(true).setItalic(false).setFontSize(24).setForegroundColor(BRAND.navy).setFontFamily("EB Garamond");
 
   const metaParts = [];
   if (trip.name) metaParts.push("Prepared for " + trip.name);
@@ -245,6 +261,29 @@ function buildItineraryPdf(trip, itinerary) {
       li.editAsText().setForegroundColor(BRAND.charcoal).setFontSize(10.5).setBold(false).setItalic(false);
     });
   }
+
+  appendCtaButton_(body, "Sign Up Free at 1TripWiser", SIGNUP_URL);
+  appendLinksRow_(
+    body,
+    [
+      { label: "See Blogs", url: BLOG_URL },
+      { label: "Join the Tribe", url: TRIBE_URL },
+    ],
+    BRAND.teal,
+    10.5
+  );
+  appendLinksRow_(
+    body,
+    [
+      { label: "Instagram", url: SOCIAL_LINKS.Instagram },
+      { label: "Facebook", url: SOCIAL_LINKS.Facebook },
+      { label: "Twitter", url: SOCIAL_LINKS.Twitter },
+      { label: "YouTube", url: SOCIAL_LINKS.YouTube },
+      { label: "LinkedIn", url: SOCIAL_LINKS.LinkedIn },
+    ],
+    BRAND.slate,
+    9
+  );
 
   appendRule_(body, BRAND.ruleLight, 1);
   const footer = body.appendParagraph("Crafted with care by 1TripWiser  \u00B7  www.1tripwiser.com");
@@ -308,6 +347,37 @@ function appendDayBanner_(body, dateLabel, dayTitle, idx) {
   cell.getChild(0).asParagraph().editAsText().setBold(true).setItalic(false).setForegroundColor(BRAND.white).setFontSize(12.5);
 }
 
+// See apps-script/Webhook.gs for details on these two.
+function appendCtaButton_(body, label, url) {
+  const table = body.appendTable([[label]]);
+  table.setBorderWidth(0);
+  const cell = table.getRow(0).getCell(0);
+  cell.setBackgroundColor(BRAND.pink);
+  cell.setPaddingTop(10).setPaddingBottom(10).setPaddingLeft(28).setPaddingRight(28);
+  const para = cell.getChild(0).asParagraph();
+  para.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  const text = para.editAsText();
+  text.setBold(true).setItalic(false).setForegroundColor(BRAND.white).setFontSize(11.5).setFontFamily("Poppins");
+  text.setLinkUrl(0, label.length - 1, url);
+}
+
+function appendLinksRow_(body, links, colorHex, fontSize) {
+  const separator = "  \u00B7  ";
+  const lineText = links.map((link) => link.label).join(separator);
+  const para = body.appendParagraph(lineText);
+  para.setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(10).setSpacingAfter(0);
+  const text = para.editAsText();
+  text.setForegroundColor(colorHex).setFontSize(fontSize).setBold(false).setItalic(false).setFontFamily("Poppins");
+
+  let cursor = 0;
+  links.forEach((link) => {
+    const start = cursor;
+    const end = start + link.label.length - 1;
+    text.setLinkUrl(start, end, link.url);
+    cursor = end + 1 + separator.length;
+  });
+}
+
 function appendActivity_(body, activity) {
   const timeLabel = activity.time ? String(activity.time).toUpperCase() : "";
   const titleText = activity.title || activity.description || "";
@@ -331,16 +401,76 @@ function appendActivity_(body, activity) {
 
 function sendItineraryEmail(trip, itinerary, pdfBlob) {
   const destination = itinerary.destination || trip.destination;
+  const name = trip.name || "there";
   const subject = "Your " + destination + " Itinerary";
-  const body = "Hi " + (trip.name || "there") + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n";
-  const options = { attachments: [pdfBlob], bcc: LEAD_BCC, from: SENDER_EMAIL, name: "1TripWiser" };
+  const plainBody =
+    "Hi " + name + ",\n\nYour itinerary for " + destination + " is attached as a PDF. Have a great trip!\n\n" +
+    "Sign up free at 1TripWiser: " + SIGNUP_URL + "\n" +
+    "Blogs: " + BLOG_URL + "\n" +
+    "Join the Tribe: " + TRIBE_URL + "\n";
+  const options = {
+    attachments: [pdfBlob],
+    bcc: LEAD_BCC,
+    from: SENDER_EMAIL,
+    name: "1TripWiser",
+    htmlBody: buildItineraryEmailHtml_(name, destination),
+  };
 
   try {
-    GmailApp.sendEmail(trip.email, subject, body, options);
+    GmailApp.sendEmail(trip.email, subject, plainBody, options);
   } catch (err) {
     delete options.from;
-    GmailApp.sendEmail(trip.email, subject, body, options);
+    GmailApp.sendEmail(trip.email, subject, plainBody, options);
   }
+}
+
+// See apps-script/Webhook.gs for full commentary on this template.
+function buildItineraryEmailHtml_(name, destination) {
+  const socialLink = (label, url) =>
+    '<a href="' + url + '" style="color:#6B7280; text-decoration:none; font-size:12px; margin:0 6px; font-family:Poppins, Arial, sans-serif;">' + label + "</a>";
+
+  return (
+    '<div style="background-color:#F7F2EA; padding:32px 16px; font-family:Poppins, Arial, sans-serif;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px; margin:0 auto; background-color:#FFFFFF; border-radius:12px; overflow:hidden; border:1px solid #E5E1D3;">' +
+    "<tr><td>" +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' +
+    '<tr><td style="background-color:#0D1526; padding:24px; text-align:center;">' +
+    '<img src="' + LOGO_URL + '" alt="1TripWiser" width="72" style="display:block; margin:0 auto; border:0;" />' +
+    "</td></tr>" +
+    '<tr><td style="padding:32px 32px 8px 32px; text-align:center;">' +
+    '<h1 style="font-family:\'EB Garamond\', Georgia, serif; font-size:26px; font-weight:600; color:#0D1526; margin:0 0 8px 0;">' +
+    "Your <span style=\"color:#E5127D;\">" + destination + "</span> Itinerary is Ready!" +
+    "</h1>" +
+    '<p style="font-size:14px; color:#6B7280; margin:0; font-family:Poppins, Arial, sans-serif;">Hi ' + name + ", your detailed day-by-day plan is attached as a PDF below." + "</p>" +
+    "</td></tr>" +
+    '<tr><td style="padding:16px 32px 32px 32px; text-align:center;">' +
+    '<p style="font-size:14px; color:#333333; line-height:1.6; margin:0 0 24px 0; font-family:Poppins, Arial, sans-serif;">' +
+    "We've packed it with real places, practical tips, and everything you need for an amazing trip. Have a great time!" +
+    "</p>" +
+    '<a href="' + SIGNUP_URL + '" style="display:inline-block; background-color:#E5127D; color:#FFFFFF; text-decoration:none; font-weight:600; font-size:15px; padding:14px 32px; border-radius:9px; font-family:Poppins, Arial, sans-serif;">' +
+    "Sign Up Free at 1TripWiser" +
+    "</a>" +
+    "</td></tr>" +
+    '<tr><td style="padding:0 32px 24px 32px; text-align:center;">' +
+    '<a href="' + BLOG_URL + '" style="color:#1B93B0; text-decoration:none; font-size:13px; font-weight:600; margin:0 10px; font-family:Poppins, Arial, sans-serif;">See Blogs</a>' +
+    '<span style="color:#E5E1D3;">|</span>' +
+    '<a href="' + TRIBE_URL + '" style="color:#1B93B0; text-decoration:none; font-size:13px; font-weight:600; margin:0 10px; font-family:Poppins, Arial, sans-serif;">Join the Tribe</a>' +
+    "</td></tr>" +
+    '<tr><td style="background-color:#F7F2EA; padding:20px 32px; text-align:center; border-top:1px solid #E5E1D3;">' +
+    "<p style=\"margin:0 0 10px 0;\">" +
+    socialLink("Instagram", SOCIAL_LINKS.Instagram) +
+    socialLink("Facebook", SOCIAL_LINKS.Facebook) +
+    socialLink("Twitter", SOCIAL_LINKS.Twitter) +
+    socialLink("YouTube", SOCIAL_LINKS.YouTube) +
+    socialLink("LinkedIn", SOCIAL_LINKS.LinkedIn) +
+    "</p>" +
+    '<p style="margin:0; font-size:11px; color:#9AA1AC; font-family:Poppins, Arial, sans-serif;">1TripWiser &middot; <a href="' + SITE_URL + '" style="color:#9AA1AC;">www.1tripwiser.com</a></p>' +
+    "</td></tr>" +
+    "</table>" +
+    "</td></tr>" +
+    "</table>" +
+    "</div>"
+  );
 }
 
 // See the matching function in apps-script/Webhook.gs for full setup notes
