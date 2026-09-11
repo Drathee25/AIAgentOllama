@@ -25,7 +25,6 @@
 //   sendNewLeadNotification_ automatically falls back to the default
 //   sending identity, so the notification still goes out either way.
 var SENDER_EMAIL = '1tripwiser@gmail.com';
-var LEAD_BCC = 'anuranjana@advivifymediagroup.com';
 
 function doPost(e) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
@@ -85,9 +84,9 @@ function triggerItineraryWorkflow_() {
   }
 }
 
-// Emails SENDER_EMAIL (bcc'd to LEAD_BCC) the moment a new trip inquiry
-// lands, so the team sees every lead immediately instead of only after the
-// itinerary is generated and sent. Deliberately never throws, same as
+// Emails SENDER_EMAIL the moment a new trip inquiry lands, so the team sees
+// every lead immediately instead of only after the itinerary is generated
+// and sent. Deliberately never throws, same as
 // triggerItineraryWorkflow_ above - a notification failure must never
 // break the actual form intake.
 function sendNewLeadNotification_(data) {
@@ -111,13 +110,13 @@ function sendNewLeadNotification_(data) {
       'Notes: ' + (data.notes || 'N/A')
     ].join('\n');
 
-    var options = { bcc: LEAD_BCC, from: SENDER_EMAIL, name: '1TripWiser' };
+    var options = { from: SENDER_EMAIL, name: '1TripWiser' };
     try {
       GmailApp.sendEmail(SENDER_EMAIL, subject, body, options);
     } catch (err) {
       // SENDER_EMAIL isn't verified as a "Send mail as" alias yet - fall
       // back to the default sending identity so the notification still
-      // goes out (the BCC still applies).
+      // goes out.
       delete options.from;
       GmailApp.sendEmail(SENDER_EMAIL, subject, body, options);
     }

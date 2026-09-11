@@ -28,16 +28,14 @@
 //      WHATSAPP_TEMPLATE_NAME are set, this step is skipped entirely and
 //      email delivery is unaffected.
 
-// Itinerary emails are sent as this address, with a BCC so leads are
-// captured on a second inbox automatically. IMPORTANT: for the "from" to
+// Itinerary emails are sent as this address. IMPORTANT: for the "from" to
 // actually take effect (rather than Gmail silently sending as the
 // executing account), SENDER_EMAIL must be added and verified as a
 // "Send mail as" alias in that Google account's Gmail settings
 // (Settings > Accounts and Import > Send mail as). Until that's done,
 // sendItineraryEmail below automatically falls back to the default sending
-// identity so email delivery is never blocked - the BCC still applies.
+// identity so email delivery is never blocked.
 const SENDER_EMAIL = "1tripwiser@gmail.com";
-const LEAD_BCC = "anuranjana@advivifymediagroup.com";
 
 const SHEET_NAME = "Sheet1";
 const START_ROW = 2;
@@ -421,7 +419,6 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
     "Join the Tribe: " + TRIBE_URL + "\n";
   const options = {
     attachments: [pdfBlob],
-    bcc: LEAD_BCC,
     from: SENDER_EMAIL,
     name: "1TripWiser",
     htmlBody: buildItineraryEmailHtml_(name, destination),
@@ -431,9 +428,8 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
     GmailApp.sendEmail(trip.email, subject, plainBody, options);
   } catch (err) {
     // SENDER_EMAIL isn't verified as a "Send mail as" alias on this account
-    // yet - fall back to the default sending identity (BCC still applies)
-    // so the customer still gets their itinerary instead of the row
-    // failing outright.
+    // yet - fall back to the default sending identity so the customer
+    // still gets their itinerary instead of the row failing outright.
     delete options.from;
     GmailApp.sendEmail(trip.email, subject, plainBody, options);
   }

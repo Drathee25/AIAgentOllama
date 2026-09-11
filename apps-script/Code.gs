@@ -13,9 +13,8 @@
 //                       from being publicly callable by anyone else)
 //   2. Run createHourlyTrigger() once from the editor to schedule it.
 
-// See the matching constants and setup note in apps-script/Webhook.gs.
+// See the matching constant and setup note in apps-script/Webhook.gs.
 const SENDER_EMAIL = "1tripwiser@gmail.com";
-const LEAD_BCC = "anuranjana@advivifymediagroup.com";
 
 const SHEET_NAME = "Sheet1";
 const START_ROW = 2;
@@ -410,7 +409,6 @@ function sendItineraryEmail(trip, itinerary, pdfBlob) {
     "Join the Tribe: " + TRIBE_URL + "\n";
   const options = {
     attachments: [pdfBlob],
-    bcc: LEAD_BCC,
     from: SENDER_EMAIL,
     name: "1TripWiser",
     htmlBody: buildItineraryEmailHtml_(name, destination),
